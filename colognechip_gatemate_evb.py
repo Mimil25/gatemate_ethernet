@@ -33,6 +33,7 @@ class _CRG(LiteXModule):
         self.rst    = Signal()
         rst_n       = Signal()
         self.cd_sys = ClockDomain()
+        self.cd_sys_unbuf = ClockDomain()
 
         # # #
 
@@ -47,7 +48,8 @@ class _CRG(LiteXModule):
         self.pll = pll = GateMatePLL(perf_mode="economy")
         self.comb += pll.reset.eq(~rst_n | self.rst)
         pll.register_clkin(clk10, 10e6)
-        pll.create_clkout(self.cd_sys, sys_clk_freq)
+        pll.create_clkout(self.cd_sys_unbuf, sys_clk_freq)
+        self.bufg = Instance('CC_BUFG', i_I=self.cd_sys_unbuf.clk, o_O=self.cd_sys.clk)
         platform.add_period_constraint(self.cd_sys.clk, 1e9/sys_clk_freq)
 
 # BaseSoC ------------------------------------------------------------------------------------------
@@ -61,7 +63,7 @@ class BaseSoC(SoCCore):
         platform = colognechip_gatemate_evb.Platform(toolchain)
 
         # USBUART PMOD as Serial--------------------------------------------------------------------
-        platform.add_extension(colognechip_gatemate_evb.usb_pmod_io("PMODA"))
+        platform.add_extension(colognechip_gatemate_evb.usb_pmod_io("PMODB"))
         if kwargs.get("uart_name", "serial") == "serial":
             if kwargs.get("uart_name", "serial") == "serial": kwargs["uart_name"] = "usb_uart"
 
@@ -123,11 +125,8 @@ class BaseSoC(SoCCore):
         platform.add_period_constraint(self.eth_phy.txoutclk, 62.5e6)
         platform.add_period_constraint(self.eth_phy.rxoutclk, 62.5e6)
         
-        self.add_etherbone(**{
+        self.add_ethernet(**{
             'phy': self.eth_phy,
-            'ip_address': '192.168.1.151',
-            'data_width': 32,
-            'arp_entries': 4,
             })
 
 
@@ -151,7 +150,7 @@ def main():
         **parser.soc_argdict)
 
     soc.platform.add_extension(colognechip_gatemate_evb.pmods_sdcard_io("PMODA"))
-    soc.platform.toolchain._synth_opts += " -abc_new"
+    soc.platform.toolchain._synth_opts += " -noclkbuf"
     if args.with_spi_sdcard:
         soc.add_spi_sdcard()
     if args.with_sdcard:
