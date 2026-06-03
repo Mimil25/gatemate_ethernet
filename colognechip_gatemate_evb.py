@@ -11,6 +11,7 @@ from migen import *
 from litex.gen import *
 
 from litex_boards.platforms import colognechip_gatemate_evb
+from litex.build.generic_platform import * 
 
 
 from litex.soc.cores.clock.colognechip import GateMatePLL
@@ -49,8 +50,9 @@ class _CRG(LiteXModule):
         self.pll = pll = GateMatePLL(perf_mode="economy")
         self.comb += pll.reset.eq(~rst_n | self.rst)
         pll.register_clkin(clk10, 10e6)
-        pll.create_clkout(self.cd_sys_unbuf, sys_clk_freq)
-        self.bufg = Instance('CC_BUFG', i_I=self.cd_sys_unbuf.clk, o_O=self.cd_sys.clk)
+        pll.create_clkout(self.cd_sys, sys_clk_freq)
+        #pll.create_clkout(self.cd_sys_unbuf, sys_clk_freq)
+        #self.bufg = Instance('CC_BUFG', i_I=self.cd_sys_unbuf.clk, o_O=self.cd_sys.clk)
         platform.add_period_constraint(self.cd_sys.clk, 1e9/sys_clk_freq)
 
 # BaseSoC ------------------------------------------------------------------------------------------
@@ -123,19 +125,28 @@ class BaseSoC(SoCCore):
         # Ethernet ---------------------------------------------------------------------------------
         self.eth_phy = GateMate_1000BASEX(sys_clk_freq, skip_eth_rx_clk=True)
 
-        platform.add_period_constraint(self.eth_phy.txoutclk, 62.5e6)
-        platform.add_period_constraint(self.eth_phy.rxoutclk, 62.5e6)
+        #platform.add_period_constraint(self.eth_phy.txoutclk, 62.5e6)
+        #platform.add_period_constraint(self.eth_phy.rxoutclk, 62.5e6)
 
-        with_ethernet  = False
-        with_etherbone = True
-        eth_ip         = "192.168.1.151"
+        #with_ethernet  = False
+        #with_etherbone = True
+        #eth_ip         = "192.168.1.151"
 
-        if with_etherbone:
-            self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
-        if with_ethernet:
-            self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip)
+        #if with_etherbone:
+        #    self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
+        #if with_ethernet:
+        #    self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip)
+
+        platform.add_extension([
+            ('dbg', 0, Pins('io_na:0')),
+            ('dbg', 1, Pins('io_na:1')),
+            ('dbg', 2, Pins('io_na:2')),
+            ])
+
+        self.comb += platform.request('dbg').eq(self.eth_phy.txoutclk)
+        self.comb += platform.request('dbg').eq(self.eth_phy.adpll_reset)
+        self.comb += platform.request('dbg').eq(ClockSignal('sys'))
         
-
 
 # Build --------------------------------------------------------------------------------------------
 
@@ -158,7 +169,7 @@ def main():
 
     soc.platform.add_extension(colognechip_gatemate_evb.pmods_sdcard_io("PMODA"))
     if args.toolchain == "peppercorn":
-        soc.platform.toolchain._synth_opts += " -abc_new -noclkbuf"
+        soc.platform.toolchain._synth_opts += ""# " -noclkbuf"
     if args.with_spi_sdcard:
         soc.add_spi_sdcard()
     if args.with_sdcard:
