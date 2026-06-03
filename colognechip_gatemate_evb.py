@@ -22,7 +22,8 @@ from litex.soc.integration.soc_core import *
 from litex.soc.integration.builder import *
 from litex.soc.integration.soc import SoCRegion
 
-from liteeth.phy.gatemate_1000basex import GateMate_1000BASEX
+#from liteeth.phy.gatemate_1000basex import GateMate_1000BASEX
+from gateware.gatemate_1000basex import GateMate_1000BASEX
 
 from litex.soc.cores.led import LedChaser
 
@@ -120,14 +121,20 @@ class BaseSoC(SoCCore):
                 sys_clk_freq = sys_clk_freq)
         
         # Ethernet ---------------------------------------------------------------------------------
-        self.eth_phy = GateMate_1000BASEX(sys_clk_freq)
+        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, skip_eth_rx_clk=True)
 
         platform.add_period_constraint(self.eth_phy.txoutclk, 62.5e6)
         platform.add_period_constraint(self.eth_phy.rxoutclk, 62.5e6)
+
+        with_ethernet  = False
+        with_etherbone = True
+        eth_ip         = "192.168.1.151"
+
+        if with_etherbone:
+            self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
+        if with_ethernet:
+            self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip)
         
-        self.add_ethernet(**{
-            'phy': self.eth_phy,
-            })
 
 
 # Build --------------------------------------------------------------------------------------------
@@ -150,7 +157,8 @@ def main():
         **parser.soc_argdict)
 
     soc.platform.add_extension(colognechip_gatemate_evb.pmods_sdcard_io("PMODA"))
-    soc.platform.toolchain._synth_opts += " -noclkbuf"
+    if args.toolchain == "peppercorn":
+        soc.platform.toolchain._synth_opts += " -abc_new -noclkbuf"
     if args.with_spi_sdcard:
         soc.add_spi_sdcard()
     if args.with_sdcard:
