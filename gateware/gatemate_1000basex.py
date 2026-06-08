@@ -47,6 +47,9 @@ class GateMate_1000BASEX(LiteXModule):
 
         self.align = Signal() # TODO replace pcs.align
         self.reset = Signal()
+
+        self.rx_prbs_err = Signal()
+
         if with_csr:
             self.add_csr()
 
@@ -61,6 +64,8 @@ class GateMate_1000BASEX(LiteXModule):
         rx_reset      = Signal()
         rx_cm_reset   = Signal(reset=1)
         rx_reset_done = Signal()
+
+        self.rx_prbs_cnt_rst = Signal()
 
         adpll_clk = Signal()
 
@@ -318,12 +323,12 @@ class GateMate_1000BASEX(LiteXModule):
 
             # Misc.
             p_SERDES_ENABLE = 1,
-            p_SERDES_AUTO_INIT = 0,
-            p_SERDES_TESTMODE = 1
+            p_SERDES_AUTO_INIT = 1,
+            p_SERDES_TESTMODE = 1,
         )
         serdes_params.update(
             # Regfile Ports
-            i_REGFILE_CLK_I          = ClockSignal(),
+            i_REGFILE_CLK_I          = ClockSignal('sys'),
             i_REGFILE_WE_I           = rfwe,
             i_REGFILE_EN_I           = rfen,
             i_REGFILE_ADDR_I         = rfaddr,
@@ -344,7 +349,7 @@ class GateMate_1000BASEX(LiteXModule):
             i_TX_PMA_RESET_I         = 0,
             i_TX_POWER_DOWN_N_I      = 1,
             i_TX_POLARITY_I          = tx_polarity,
-            i_TX_PRBS_SEL_I          = 0b00,
+            i_TX_PRBS_SEL_I          = 0,
             i_TX_PRBS_FORCE_ERR_I    = 0,
             i_TX_8B10B_EN_I          = 1,
             i_TX_8B10B_BYPASS_I      = 0x00,
@@ -369,9 +374,9 @@ class GateMate_1000BASEX(LiteXModule):
             i_RX_BUF_RESET_I         = 0,
             i_RX_POWER_DOWN_N_I      = 1,
             i_RX_POLARITY_I          = rx_polarity,
-            i_RX_PRBS_SEL_I          = 0b00,
-            i_RX_PRBS_CNT_RESET_I    = 0,
-            i_RX_8B10B_EN_I          = 0,
+            i_RX_PRBS_SEL_I          = 0,
+            i_RX_PRBS_CNT_RESET_I    = 0, #self.rx_prbs_cnt_rst,
+            i_RX_8B10B_EN_I          = 1,
             i_RX_8B10B_BYPASS_I      = 0x00,
             i_RX_EN_EI_DETECTOR_I    = 0,
             i_RX_COMMA_DETECT_EN_I   = 1,
@@ -383,7 +388,7 @@ class GateMate_1000BASEX(LiteXModule):
             o_RX_CHAR_IS_COMMA_O     = Open(),
             o_RX_CHAR_IS_K_O         = Open(),
             o_RX_DISP_ERR_O          = Open(),
-            o_RX_PRBS_ERR_O          = Open(),
+            o_RX_PRBS_ERR_O          = self.rx_prbs_err,
             o_RX_BUF_ERR_O           = Open(),
             o_RX_BYTE_IS_ALIGNED_O   = Open(),
             o_RX_BYTE_REALIGN_O      = Open(),
@@ -405,7 +410,7 @@ class GateMate_1000BASEX(LiteXModule):
                     ),
                 ]
 
-        self.comb += [
+        self.comb += [ # set back to comb
             tx_reset.eq(self.reset),
             rx_reset.eq(self.reset)
         ]
