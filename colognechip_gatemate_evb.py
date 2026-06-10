@@ -124,7 +124,7 @@ class BaseSoC(SoCCore):
         
         # Ethernet ---------------------------------------------------------------------------------
         
-        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=125e6)
+        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=100e6)
         
         #platform.add_source('gateware/serdes_lb.v')
         #self.serdes = Instance('serdes_lb')
@@ -141,22 +141,22 @@ class BaseSoC(SoCCore):
         #if with_ethernet:
         #    self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip)
 
-        platform.add_extension([
-            ('dbg', 0, Pins('io_na:0')),
-            ('dbg', 1, Pins('io_na:1')),
-            ('dbg', 2, Pins('io_na:2')),
-            ('dbg', 3, Pins('io_na:3')),
-            ])
-        platform.add_extension([
-            ('dbg_in', 0, Pins('io_wc:0')),
-            ])
+        #platform.add_extension([
+        #    ('dbg', 0, Pins('io_na:0')),
+        #    ('dbg', 1, Pins('io_na:1')),
+        #    ('dbg', 2, Pins('io_na:2')),
+        #    ('dbg', 3, Pins('io_na:3')),
+        #    ])
+        #platform.add_extension([
+        #    ('dbg_in', 0, Pins('io_wc:0')),
+        #    ])
 
-        self.comb += platform.request('dbg').eq(self.eth_phy.txoutclk)
-        self.comb += platform.request('dbg').eq(self.eth_phy.adpll_reset)
-        self.comb += platform.request('dbg').eq(self.eth_phy.rx_prbs_err)
-        self.comb += platform.request('dbg').eq(ClockSignal('sys'))
-        
-        self.comb += self.eth_phy.rx_prbs_cnt_rst.eq(platform.request('dbg_in'))
+        #self.comb += platform.request('dbg').eq(self.eth_phy.txoutclk)
+        #self.comb += platform.request('dbg').eq(self.eth_phy.adpll_reset)
+        #self.comb += platform.request('dbg').eq(self.eth_phy.rx_prbs_err)
+        #self.comb += platform.request('dbg').eq(ClockSignal('sys'))
+        #
+        #self.comb += self.eth_phy.rx_prbs_cnt_rst.eq(platform.request('dbg_in'))
         
 
 # Build --------------------------------------------------------------------------------------------
