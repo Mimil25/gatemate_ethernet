@@ -127,7 +127,9 @@ class BaseSoC(SoCCore):
         self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=100e6)
         
         #platform.add_source('gateware/serdes_lb.v')
-        #self.serdes = Instance('serdes_lb')
+        #self.serdes = Instance('serdes_lb',
+        #                       i_trx_rstn_i = ~ResetSignal(),
+        #                       i_ref_clk = ClockSignal())
 
         #platform.add_period_constraint(self.eth_phy.txoutclk, 62.5e6)
         #platform.add_period_constraint(self.eth_phy.rxoutclk, 62.5e6)

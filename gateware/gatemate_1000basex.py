@@ -34,8 +34,8 @@ class GateMate_1000BASEX(LiteXModule):
         assert refclk_freq in [100e6, 125e6]
         # TODO no more: self.pcs = pcs = PCS(lsb_first=True)
 
-        self.sink    = stream.Endpoint(eth_phy_description(16)) # pcs.sink
-        self.source  = stream.Endpoint(eth_phy_description(16)) # pcs.source
+        self.sink    = stream.Endpoint(eth_phy_description(64)) # pcs.sink
+        self.source  = stream.Endpoint(eth_phy_description(64)) # pcs.source
         self.link_up = Signal() # TODO replace pcs.link_up
 
         self.cd_eth_tx = ClockDomain()
@@ -139,7 +139,7 @@ class GateMate_1000BASEX(LiteXModule):
             p_RX_ALIGN_COMMA_ENABLE = 0x3FF,
             p_RX_SLIDE_MODE = 0,
             p_RX_COMMA_DETECT_EN_OVR = 0,
-            p_RX_COMMA_DETECT_EN = 1,
+            p_RX_COMMA_DETECT_EN = 0,
             p_RX_SLIDE = 0,
             p_RX_BYTE_REALIGN = 0,
 
@@ -203,9 +203,9 @@ class GateMate_1000BASEX(LiteXModule):
 
             # TX+RX 8B10B
             p_TX_8B10B_EN_OVR = 0,
-            p_TX_8B10B_EN = 1,
+            p_TX_8B10B_EN = 0,
             p_RX_8B10B_EN_OVR = 0,
-            p_RX_8B10B_EN = 1,
+            p_RX_8B10B_EN = 0,
             p_RX_8B10B_BYPASS = 0,
 
             # TX+RX Datapath
@@ -319,7 +319,7 @@ class GateMate_1000BASEX(LiteXModule):
             p_PLL_BISC_DLY_PFD_MON_REF = 0,
             p_PLL_BISC_DLY_PFD_MON_DIV = 2,
 
-            # Misc.
+            # Misc.q
             p_SERDES_ENABLE = 1,
             p_SERDES_AUTO_INIT = 0,
             p_SERDES_TESTMODE = 1,
@@ -331,18 +331,19 @@ class GateMate_1000BASEX(LiteXModule):
             i_REGFILE_EN_I           = rfen,
             i_REGFILE_ADDR_I         = rfaddr,
             i_REGFILE_DI_I           = rfdi,
-            i_REGFILE_MASK_I         = 0xFFFF,
+            i_REGFILE_MASK_I         = 0, #0xFFFF,
             o_REGFILE_DO_O           = rfdo,
             o_REGFILE_RDY_O          = rfrdy,
 
             # PLL and Misc. Ports
-            i_PLL_RESET_I            = self.adpll_reset,
+            i_PLL_RESET_I            = self.adpll_reset | ResetSignal(),
             o_PLL_CLK_O              = self.txoutclk, # 125 MHz
             i_LOOPBACK_I             = 0b00,
 
             # TX
-            i_TX_DATA_I              = 0x123456789abcdef,#self.sink.data,
-            i_TX_RESET_I             = tx_reset,
+            i_TX_DATA_I              = 0x4A4A4AFF4A4A4ABC,
+            #i_TX_DATA_I              = 0x0123456789ABCDEF, #self.sink.data,
+            i_TX_RESET_I             = self.adpll_reset | ResetSignal(),
             i_TX_PCS_RESET_I         = 0,
             i_TX_PMA_RESET_I         = 0,
             i_TX_POWER_DOWN_N_I      = 1,
@@ -364,7 +365,7 @@ class GateMate_1000BASEX(LiteXModule):
 
             # RX
             i_RX_CLK_I               = self.txoutclk, # ClockSignal("eth_tx"), # PLL_CLK_OUT
-            i_RX_RESET_I             = rx_reset,
+            i_RX_RESET_I             = self.adpll_reset | ResetSignal(),
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
             i_RX_CDR_RESET_I         = 0,
@@ -408,7 +409,7 @@ class GateMate_1000BASEX(LiteXModule):
                     ),
                 ]
 
-        self.comb += [ # set back to comb
+        self.sync += [ # set back to comb
             tx_reset.eq(self.reset),
             rx_reset.eq(self.reset)
         ]
@@ -418,9 +419,9 @@ class GateMate_1000BASEX(LiteXModule):
         reset_counter    = Signal(max=pll_reset_cycles+1)
         self.sync += [
             If(reset_counter >= pll_reset_cycles,
-                self.adpll_reset.eq(0)
+                self.adpll_reset.eq(0),
             ).Else(
-                reset_counter.eq(reset_counter + 1)
+                reset_counter.eq(reset_counter + 1),
             )
         ]
 
