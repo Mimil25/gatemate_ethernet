@@ -17,26 +17,25 @@ from litex.soc.interconnect import stream
 from litex.soc.cores.clock.colognechip import GateMatePLL
 
 from liteeth.common import *
-#from liteeth.phy.pcs_1000basex import *
+
+from .pcs_1000basex import *
 
 # GateMate_1000BASEX PHY ---------------------------------------------------------------------------------
 
 class GateMate_1000BASEX(LiteXModule):
-    dw          = 8
     linerate    = 1.25e9
-    rx_clk_freq = 125e6
-    tx_clk_freq = 125e6
-    def __init__(self, sys_clk_freq, refclk_freq=100e6, with_csr=True,
+    def __init__(self, sys_clk_freq, dw=64, refclk_freq=100e6, with_csr=True,
         tx_polarity     = 0,
         rx_polarity     = 0,
-        skip_eth_rx_clk = True,
     ):
         assert refclk_freq in [100e6, 125e6]
-        # TODO no more: self.pcs = pcs = PCS(lsb_first=True)
+        assert dw in [16, 32, 64]
 
-        self.sink    = stream.Endpoint(eth_phy_description(64)) # pcs.sink
-        self.source  = stream.Endpoint(eth_phy_description(64)) # pcs.source
-        self.link_up = Signal() # TODO replace pcs.link_up
+        #self.pcs = pcs = PCS(lsb_first=True)
+
+        #self.sink    = stream.Endpoint(eth_phy_description(64)) # pcs.sink
+        #self.source  = stream.Endpoint(eth_phy_description(64)) # pcs.source
+        #self.link_up = Signal() # TODO replace pcs.link_up
 
         self.cd_eth_tx = ClockDomain()
         self.cd_eth_rx = ClockDomain()
@@ -47,8 +46,6 @@ class GateMate_1000BASEX(LiteXModule):
 
         self.align = Signal() # TODO replace pcs.align
         self.reset = Signal()
-
-        self.rx_prbs_err = Signal()
 
         if with_csr:
             self.add_csr()
@@ -67,28 +64,22 @@ class GateMate_1000BASEX(LiteXModule):
 
         adpll_clk = Signal()
 
-        # SerDes Register File
-        rfaddr = Signal(8)
-        rfen   = Signal()
-        rfdi   = Signal(16)
-        rfrdy  = Signal()
-        rfdo   = Signal(16)
-        rfwe   = Signal()
-
         adpll_settings = {
             100e6: {
-                'fcntrl': 0x3A,
+                'fcntrl': {64: 0x3A, 32: 0x3A, 16: 0x1A}[dw],
                 'main_divsel': 0x1b,
                 'out_divsel': {1.25e9 : 3, 3.125e9 : 1}[self.linerate],
             },
             125e6: { 
-                'fcntrl': 0x1a,
+                'fcntrl': {64: 0x3A, 32: 0x3A, 16: 0x1A}[dw],
                 'main_divsel': 0x1a,
                 'out_divsel': {1.25e9 : 3, 3.125e9 : 1}[self.linerate],
             }
         }
 
         adpll = adpll_settings.get(refclk_freq)
+
+        datapath_sel = {64: 3, 32: 1, 16: 0}[dw]
 
         # Work around Python's 255 argument limitation.
         self.serdes_params = serdes_params = dict(
@@ -209,8 +200,8 @@ class GateMate_1000BASEX(LiteXModule):
             p_RX_8B10B_BYPASS = 0,
 
             # TX+RX Datapath
-            p_TX_DATAPATH_SEL = 3, # 80 bit
-            p_RX_DATAPATH_SEL = 3, # 80 bit
+            p_TX_DATAPATH_SEL = datapath_sel,
+            p_RX_DATAPATH_SEL = datapath_sel,
 
             # TX+RX Polarity Control
             p_RX_POLARITY_OVR = 0,
@@ -325,23 +316,13 @@ class GateMate_1000BASEX(LiteXModule):
             p_SERDES_TESTMODE = 1,
         )
         serdes_params.update(
-            # Regfile Ports
-            i_REGFILE_CLK_I          = 0,#ClockSignal('sys'),
-            i_REGFILE_WE_I           = rfwe,
-            i_REGFILE_EN_I           = rfen,
-            i_REGFILE_ADDR_I         = rfaddr,
-            i_REGFILE_DI_I           = rfdi,
-            i_REGFILE_MASK_I         = 0, #0xFFFF,
-            o_REGFILE_DO_O           = rfdo,
-            o_REGFILE_RDY_O          = rfrdy,
-
             # PLL and Misc. Ports
             i_PLL_RESET_I            = self.adpll_reset | ResetSignal(),
             o_PLL_CLK_O              = self.txoutclk, # 125 MHz
             i_LOOPBACK_I             = 0b00,
 
             # TX
-            i_TX_DATA_I              = 0x4A4A4AFF4A4A4ABC,
+            i_TX_DATA_I              = 0x0123456789abcdBC,
             #i_TX_DATA_I              = 0x0123456789ABCDEF, #self.sink.data,
             i_TX_RESET_I             = self.adpll_reset | ResetSignal(),
             i_TX_PCS_RESET_I         = 0,
@@ -382,18 +363,28 @@ class GateMate_1000BASEX(LiteXModule):
             i_RX_SLIDE_I             = 0,
             i_RX_MCOMMA_ALIGN_I      = 1,
             i_RX_PCOMMA_ALIGN_I      = 1,
-            o_RX_DATA_O              = self.source.data,
+            o_RX_DATA_O              = Open(),#self.source.data,
             o_RX_NOT_IN_TABLE_O      = Open(),
             o_RX_CHAR_IS_COMMA_O     = Open(),
             o_RX_CHAR_IS_K_O         = Open(),
             o_RX_DISP_ERR_O          = Open(),
-            o_RX_PRBS_ERR_O          = self.rx_prbs_err,
+            o_RX_PRBS_ERR_O          = Open(),
             o_RX_BUF_ERR_O           = Open(),
             o_RX_BYTE_IS_ALIGNED_O   = Open(),
             o_RX_BYTE_REALIGN_O      = Open(),
             o_RX_RESET_DONE_O        = rx_reset_done,
             o_RX_EI_EN_O             = Open(),
-            o_RX_CLK_O               = self.rxoutclk
+            o_RX_CLK_O               = self.rxoutclk,
+            
+            # Regfile Ports
+            i_REGFILE_CLK_I          = 0,#ClockSignal('sys'),
+            i_REGFILE_WE_I           = 0,
+            i_REGFILE_EN_I           = 0,
+            i_REGFILE_ADDR_I         = 0,
+            i_REGFILE_DI_I           = 0,
+            i_REGFILE_MASK_I         = 0, #0xFFFF,
+            o_REGFILE_DO_O           = Open(),
+            o_REGFILE_RDY_O          = Open(),
         )
 
         self.specials += [

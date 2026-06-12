@@ -124,7 +124,7 @@ class BaseSoC(SoCCore):
         
         # Ethernet ---------------------------------------------------------------------------------
         
-        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=100e6)
+        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=125e6)
         
         #platform.add_source('gateware/serdes_lb.v')
         #self.serdes = Instance('serdes_lb',
