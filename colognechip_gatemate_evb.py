@@ -124,24 +124,24 @@ class BaseSoC(SoCCore):
         
         # Ethernet ---------------------------------------------------------------------------------
         
-        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=125e6)
+        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=100e6)
         
         #platform.add_source('gateware/serdes_lb.v')
         #self.serdes = Instance('serdes_lb',
         #                       i_trx_rstn_i = ~ResetSignal(),
         #                       i_ref_clk = ClockSignal())
 
-        #platform.add_period_constraint(self.eth_phy.txoutclk, 62.5e6)
-        #platform.add_period_constraint(self.eth_phy.rxoutclk, 62.5e6)
+        platform.add_period_constraint(self.eth_phy.txoutclk, self.eth_phy.tx_clk_freq)
+        platform.add_period_constraint(self.eth_phy.rxoutclk, self.eth_phy.rx_clk_freq)
 
-        #with_ethernet  = False
-        #with_etherbone = True
-        #eth_ip         = "192.168.1.151"
+        with_ethernet  = False
+        with_etherbone = True
+        eth_ip         = "192.168.1.151"
 
-        #if with_etherbone:
-        #    self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
-        #if with_ethernet:
-        #    self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip)
+        if with_etherbone:
+            self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
+        if with_ethernet:
+            self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip)
 
         #platform.add_extension([
         #    ('dbg', 0, Pins('io_na:0')),

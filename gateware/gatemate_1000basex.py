@@ -18,33 +18,35 @@ from litex.soc.cores.clock.colognechip import GateMatePLL
 
 from liteeth.common import *
 
-from .pcs_1000basex import *
+from .pcs32_1000basex import *
 
 # GateMate_1000BASEX PHY ---------------------------------------------------------------------------------
 
 class GateMate_1000BASEX(LiteXModule):
     linerate    = 1.25e9
-    def __init__(self, sys_clk_freq, dw=64, refclk_freq=100e6, with_csr=True,
+    def __init__(self, sys_clk_freq, refclk_freq=100e6, with_csr=True,
         tx_polarity     = 0,
         rx_polarity     = 0,
     ):
         assert refclk_freq in [100e6, 125e6]
-        assert dw in [16, 32, 64]
+        self.dw = 32 # assert dw in [16, 32, 64]
 
-        #self.pcs = pcs = PCS(lsb_first=True)
+        self.pcs = PCS32()
 
-        #self.sink    = stream.Endpoint(eth_phy_description(64)) # pcs.sink
-        #self.source  = stream.Endpoint(eth_phy_description(64)) # pcs.source
-        #self.link_up = Signal() # TODO replace pcs.link_up
+        self.sink   = self.pcs.sink
+        self.source = self.pcs.source
+        self.link_up = self.pcs.link_up
 
         self.cd_eth_tx = ClockDomain()
         self.cd_eth_rx = ClockDomain()
 
-        # for specifying clock constraints. 62.5MHz clocks.
+        # for specifying clock constraints.
         self.txoutclk = Signal()
         self.rxoutclk = Signal()
 
-        self.align = Signal() # TODO replace pcs.align
+        self.rx_clk_freq = self.linerate / (self.dw *1.25)
+        self.tx_clk_freq = self.linerate / (self.dw *1.25)
+
         self.reset = Signal()
 
         if with_csr:
@@ -62,16 +64,14 @@ class GateMate_1000BASEX(LiteXModule):
         rx_cm_reset   = Signal(reset=1)
         rx_reset_done = Signal()
 
-        adpll_clk = Signal()
-
         adpll_settings = {
             100e6: {
-                'fcntrl': {64: 0x3A, 32: 0x3A, 16: 0x1A}[dw],
+                'fcntrl': {64: 0x3A, 32: 0x3A, 16: 0x1A}[self.dw],
                 'main_divsel': 0x1b,
                 'out_divsel': {1.25e9 : 3, 3.125e9 : 1}[self.linerate],
             },
             125e6: { 
-                'fcntrl': {64: 0x3A, 32: 0x3A, 16: 0x1A}[dw],
+                'fcntrl': {64: 0x3A, 32: 0x3A, 16: 0x1A}[self.dw],
                 'main_divsel': 0x1a,
                 'out_divsel': {1.25e9 : 3, 3.125e9 : 1}[self.linerate],
             }
@@ -79,7 +79,7 @@ class GateMate_1000BASEX(LiteXModule):
 
         adpll = adpll_settings.get(refclk_freq)
 
-        datapath_sel = {64: 3, 32: 1, 16: 0}[dw]
+        datapath_sel = {64: 3, 32: 1, 16: 0}[self.dw]
 
         # Work around Python's 255 argument limitation.
         self.serdes_params = serdes_params = dict(
@@ -126,13 +126,12 @@ class GateMate_1000BASEX(LiteXModule):
             p_RX_ALIGN_PCOMMA_VALUE = 0x17C,
             p_RX_PCOMMA_ALIGN_OVR = 0,
             p_RX_PCOMMA_ALIGN = 0,
-            p_RX_ALIGN_COMMA_WORD = 3, # 16 bit TODO auto sel with datapath width
+            p_RX_ALIGN_COMMA_WORD = 2, # 32 bit TODO auto sel with datapath width
             p_RX_ALIGN_COMMA_ENABLE = 0x3FF,
             p_RX_SLIDE_MODE = 0,
             p_RX_COMMA_DETECT_EN_OVR = 0,
-            p_RX_COMMA_DETECT_EN = 0,
+            p_RX_COMMA_DETECT_EN = 1,
             p_RX_SLIDE = 0,
-            p_RX_BYTE_REALIGN = 0,
 
             # RX Equalizer
             p_RX_EQA_RESET_TIME = 3,
@@ -322,8 +321,7 @@ class GateMate_1000BASEX(LiteXModule):
             i_LOOPBACK_I             = 0b00,
 
             # TX
-            i_TX_DATA_I              = 0x0123456789abcdBC,
-            #i_TX_DATA_I              = 0x0123456789ABCDEF, #self.sink.data,
+            i_TX_DATA_I              = self.pcs.tx.data,
             i_TX_RESET_I             = self.adpll_reset | ResetSignal(),
             i_TX_PCS_RESET_I         = 0,
             i_TX_PMA_RESET_I         = 0,
@@ -333,19 +331,19 @@ class GateMate_1000BASEX(LiteXModule):
             i_TX_PRBS_FORCE_ERR_I    = 0,
             i_TX_8B10B_EN_I          = 1,
             i_TX_8B10B_BYPASS_I      = 0x00,
-            i_TX_CHAR_IS_K_I         = 0x01,
+            i_TX_CHAR_IS_K_I         = self.pcs.tx.char_is_k,
             i_TX_CHAR_DISPMODE_I     = 0,
             i_TX_CHAR_DISPVAL_I      = 0,
             i_TX_ELEC_IDLE_I         = 0,
             i_TX_DETECT_RX_I         = 1,
-            i_TX_CLK_I               = self.txoutclk, #ClockSignal("eth_tx"),
+            i_TX_CLK_I               = ClockSignal("eth_tx"),
             o_TX_DETECT_RX_DONE_O    = Open(),
             o_TX_DETECT_RX_PRESENT_O = Open(),
             o_TX_BUF_ERR_O           = Open(),
             o_TX_RESET_DONE_O        = tx_reset_done,
 
             # RX
-            i_RX_CLK_I               = self.txoutclk, # ClockSignal("eth_tx"), # PLL_CLK_OUT
+            i_RX_CLK_I               = ClockSignal("eth_rx"),
             i_RX_RESET_I             = self.adpll_reset | ResetSignal(),
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
@@ -359,15 +357,15 @@ class GateMate_1000BASEX(LiteXModule):
             i_RX_8B10B_EN_I          = 1,
             i_RX_8B10B_BYPASS_I      = 0x00,
             i_RX_EN_EI_DETECTOR_I    = 0,
-            i_RX_COMMA_DETECT_EN_I   = 1,
+            i_RX_COMMA_DETECT_EN_I   = self.pcs.align,
             i_RX_SLIDE_I             = 0,
-            i_RX_MCOMMA_ALIGN_I      = 1,
-            i_RX_PCOMMA_ALIGN_I      = 1,
-            o_RX_DATA_O              = Open(),#self.source.data,
-            o_RX_NOT_IN_TABLE_O      = Open(),
+            i_RX_MCOMMA_ALIGN_I      = self.pcs.align,
+            i_RX_PCOMMA_ALIGN_I      = self.pcs.align,
+            o_RX_DATA_O              = self.pcs.rx.data,
+            o_RX_NOT_IN_TABLE_O      = self.pcs.rx.table_err,
             o_RX_CHAR_IS_COMMA_O     = Open(),
-            o_RX_CHAR_IS_K_O         = Open(),
-            o_RX_DISP_ERR_O          = Open(),
+            o_RX_CHAR_IS_K_O         = self.pcs.rx.char_is_k,
+            o_RX_DISP_ERR_O          = self.pcs.rx.disparity_err,
             o_RX_PRBS_ERR_O          = Open(),
             o_RX_BUF_ERR_O           = Open(),
             o_RX_BYTE_IS_ALIGNED_O   = Open(),
