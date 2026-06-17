@@ -23,28 +23,9 @@ from liteeth.common import *
 # PCS SGMII Timer ----------------------------------------------------------------------------------
 
 SGMII_1000MBPS_SPEED = 0b10
-SGMII_100MBPS_SPEED  = 0b01
-SGMII_10MBPS_SPEED   = 0b00
+SGMII_100MBPS_SPEED  = 0b01 # unused
+SGMII_10MBPS_SPEED   = 0b00 # unused
 
-class PCSSGMIITimer(LiteXModule):
-    def __init__(self, speed):
-        self.enable = Signal()
-        self.done   = Signal()
-
-        # # #
-
-        count = Signal(max=100)
-        self.comb += self.done.eq(count == 0)
-        self.sync += [
-            count.eq(count - 1),
-            If(~self.enable | self.done,
-                Case(speed, {
-                    SGMII_10MBPS_SPEED   : count.eq(99),
-                    SGMII_100MBPS_SPEED  : count.eq(9),
-                    SGMII_1000MBPS_SPEED : count.eq(0),
-                })
-            )
-        ]
 
 # PCS TX -------------------------------------------------------------------------------------------
 
@@ -52,7 +33,6 @@ class PCSTX32(LiteXModule):
     def __init__(self):
         self.config_valid = Signal()                               # Config valid.
         self.config_reg   = Signal(16)                             # Config register (16-bit).
-        self.sgmii_speed  = Signal(2)                              # SGMII speed.
         self.sink         = sink = stream.Endpoint([("data", 32)])  # Data input.
 
         # PHY ports output
@@ -65,35 +45,31 @@ class PCSTX32(LiteXModule):
         parity = Signal() # Parity for /R/ extension.
         ctype  = Signal() # Toggles config type.
 
-        # SGMII Timer.
-        # ------------
-        self.timer = timer = PCSSGMIITimer(speed=self.sgmii_speed)
-
         # FSM.
         # ----
         self.fsm = fsm = FSM()
         fsm.act("START",
-            self.char_is_k.eq(0b0001),
-            self.data[0:8].eq(K(28, 5)),
+            NextValue(self.char_is_k, 0b0001),
+            NextValue(self.data[0:8], K(28, 5)),
             # Wait for valid Config.
             If(self.config_valid,
                 NextValue(ctype, ~ctype),
-                Case(ctype, {
-                    0b0 : self.data[8:16].eq(D(21, 5)), # /C1/.
-                    0b1 : self.data[8:16].eq(D( 2, 2)), # /C2/.
-                }),
-                self.data[16:32].eq(self.config_reg),
+                NextValue(self.data[8:16], Mux(ctype,
+                    D(21, 5), # /C1/.
+                    D( 2, 2), # /C2/.
+                )),
+                NextValue(self.data[16:32], self.config_reg),
             # Wait for valid Data.
             ).Else(
                 If(sink.valid,
-                    sink.ready.eq(timer.done),
-                    self.data.eq(Cat(
+                    sink.ready.eq(1),
+                    NextValue(self.data, Cat(
                         K(27, 7), # Start-of-packet /S/.
                         sink.data[8:32]
                     )),
                     NextState("DATA")
                 ).Else(
-                    self.data.eq(Cat( # IDLE TODO handle disparity
+                    NextValue(self.data, Cat( # IDLE TODO handle disparity
                         K(28, 5), # D(5, 6), 
                         D(5, 6), 
                         D(5, 6), 
@@ -105,13 +81,13 @@ class PCSTX32(LiteXModule):
         )
         fsm.act("DATA",
             # Send Data.
-            timer.enable.eq(1),
-            sink.ready.eq(timer.done),
+            sink.ready.eq(1),
             If(sink.valid,
-                self.data.eq(sink.data),
+                NextValue(self.char_is_k, 0b0000),
+                NextValue(self.data, sink.data),
             ).Else(
-                self.char_is_k.eq(0b1111),
-                self.data.eq(Cat(
+                NextValue(self.char_is_k, 0b1111),
+                NextValue(self.data, Cat(
                     K(29, 7), # End-of-frame /T/.
                     K(23, 7), # Carrier Extend /R/.
                     K(23, 7), 
@@ -129,7 +105,6 @@ class PCSRX32(LiteXModule):
         self.seen_valid_ci   = Signal()   # CI seen.
         self.seen_config_reg = Signal()   # Config seen.
         self.config_reg      = Signal(16) # Config register (16-bit).
-        self.sgmii_speed     = Signal(2)  # SGMII speed.
         self.source          = source = stream.Endpoint([("data", 32), ("error", 1)]) # Data output.
 
         # PHY ports inputs
@@ -137,7 +112,6 @@ class PCSRX32(LiteXModule):
         self.char_is_k = Signal(4)
         self.disparity_err = Signal(4)
         self.table_err = Signal(4)
-        self.enable = Signal()
 
         # # #
 
@@ -148,72 +122,80 @@ class PCSRX32(LiteXModule):
 
         self.comb += invalid.eq(self.table_err)
 
-        # SGMII Timer.
-        # ------------
-        self.timer = timer = CEInserter()(PCSSGMIITimer(speed=self.sgmii_speed))
-        self.comb += timer.ce.eq(self.enable) 
 
         # Buffer.
         # -------
         self.buffer = buffer = stream.Buffer([("data", 32)], pipe_valid=True, pipe_ready=False)
-        self.comb += If(timer.ce & timer.done,
+        self.comb += [
             buffer.source.connect(source, omit={"last", "error"}),
             source.last.eq(buffer.source.valid & ~buffer.sink.valid), # Last when next is not valid.
-        )
+        ]
 
         # FSM.
         # ----
         self.fsm = fsm = FSM()
         fsm.act("START",
-            If(self.enable,
-                # Wait for a K-character.
-                If(self.char_is_k == 0b0001,
-                    # K-character is Config or Idle K28.5.
-                    If(self.data[0:8] == K(28, 5),
-                        NextValue(count, 0),
-                        If((self.data[8:16] == D(21, 5)) | # /C1/.
-                          (self.data[8:16] == D( 2, 2)),  # /C2/.
-                            self.seen_valid_ci.eq(1),
-                            self.seen_config_reg.eq(1),
-                            NextValue(self.config_reg, self.data[16:32]),
-                        ),
-                        # Check for Idle Word.
-                        If((self.data[8:16] == D( 5, 6)) | # /I1/.
-                           (self.data[8:16] == D(16, 2)),  # /I2/.
-                            self.seen_valid_ci.eq(1),
-                            NextState("START")
-                        )
-                       ),
-                    # K-character is Start-of-packet /S/.
-                       If(self.data[0:8] == K(27, 7),
-                        timer.enable.eq(1),
-                        buffer.sink.valid.eq(1),
-                        buffer.sink.data.eq(Cat(
-                            0x55, # First Preamble Byte.
-                            self.data[8:32]
-                        )),
-                        NextState("DATA")
+            NextValue(buffer.sink.valid, 0),
+            # Wait for a K-character.
+            If(self.char_is_k == 0b0001,
+                # K-character is Config or Idle K28.5.
+                If(self.data[0:8] == K(28, 5),
+                    NextValue(count, 0),
+                    If((self.data[8:16] == D(21, 5)) | # /C1/.
+                      (self.data[8:16] == D( 2, 2)),  # /C2/.
+                        self.seen_valid_ci.eq(1),
+                        self.seen_config_reg.eq(1),
+                        NextValue(self.config_reg, self.data[16:32]),
+                    ),
+                    # Check for Idle Word.
+                    If((self.data[8:16] == D( 5, 6)) | # /I1/.
+                       (self.data[8:16] == D(16, 2)),  # /I2/.
+                        self.seen_valid_ci.eq(1),
+                        NextState("START")
                     )
+                   ),
+                # K-character is Start-of-packet /S/.
+                   If(self.data[0:8] == K(27, 7),
+                    NextValue(buffer.sink.valid, 1),
+                    NextValue(buffer.sink.data, Cat(
+                        0x55, # First Preamble Byte.
+                        self.data[8:32]
+                    )),
+                    NextState("DATA")
                 )
             )
         )
         fsm.act("DATA",
-            If(self.enable,
-                If((self.char_is_k == 0) & ~invalid,
-                    # Receive Data.
-                    timer.enable.eq(1),
-                    buffer.sink.valid.eq(timer.done),
-                    buffer.sink.data.eq(self.data),
-                   ).Elif((self.char_is_k == 1) & (self.data[0:8] == K(29, 7)) & ~invalid, # TODO handle unaligned EPD
-                    # K-character is End-of-packet /S/.
-                    NextState("START"),
-                ).Else(
-                    source.error.eq(1),
-                    source.last.eq(1),
-                    source.valid.eq(1),
-                    If(source.ready,
-                       NextState("ERROR"),
-                    )
+            If((self.char_is_k == 0) & ~invalid,
+                # Receive Data.
+                NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.data, self.data),
+            ).Elif((self.char_is_k == 1) & (self.data[0:8] == K(29, 7)) & ~invalid,
+                # K-character is End-of-packet /S/.
+                NextValue(buffer.sink.valid, 0),
+                NextState("START"),
+            ).Elif((self.char_is_k == 0b0010) & (self.data[8:16] == K(29, 7)) & ~invalid,
+                # K-character is End-of-packet /S/.
+                NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.data, self.data),
+                NextState("START"),
+            ).Elif((self.char_is_k == 0b0100) & (self.data[16:24] == K(29, 7)) & ~invalid,
+                # K-character is End-of-packet /S/.
+                NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.data, self.data),
+                NextState("START"),
+            ).Elif((self.char_is_k == 0b1000) & (self.data[24:32] == K(29, 7)) & ~invalid,
+                # K-character is End-of-packet /S/.
+                NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.data, self.data),
+                NextState("START"),
+            ).Else(
+                NextValue(buffer.sink.valid, 0),
+                source.error.eq(1),
+                source.last.eq(1),
+                source.valid.eq(1),
+                If(source.ready,
+                   NextState("ERROR"),
                 )
             )
         )
@@ -288,24 +270,16 @@ class PCS32(LiteXModule):
         # Linkdown/Speed Detection.
         # -------------------------
         sgmii_speed_valid = Signal()
-        sgmii_tx_speed    = Signal(2)
-        sgmii_rx_speed    = Signal(2)
         self.comb += [
             is_sgmii.eq(self.lp_abi.o[0]),
             sgmii_speed_valid.eq(self.lp_abi.o[10:12] != 0b11),
-            sgmii_tx_speed.eq(Mux(sgmii_speed_valid, self.lp_abi.o[10:12], SGMII_1000MBPS_SPEED)),
-            sgmii_rx_speed.eq(Mux(self.lp_abi.i[10:12] != 0b11, self.lp_abi.i[10:12], SGMII_1000MBPS_SPEED)),
             # Detect that link is down:
             # - 1000BASE-X : linkup can be inferred by non-empty reg.
             # - SGMII      : linkup is indicated with bit 15.
             If(~is_sgmii,
                 linkdown.eq(self.lp_abi.o == 0),
-                self.tx.sgmii_speed.eq(0b10),
-                self.rx.sgmii_speed.eq(0b10),
             ).Else(
                 linkdown.eq(~self.lp_abi.o[15] | ~sgmii_speed_valid),
-                self.tx.sgmii_speed.eq(sgmii_tx_speed),
-                self.rx.sgmii_speed.eq(sgmii_rx_speed),
             )
         ]
 
@@ -316,7 +290,7 @@ class PCS32(LiteXModule):
                 self.tx.config_reg[0].eq(is_sgmii),                     # SGMII: SGMII in-use.
                 self.tx.config_reg[5].eq(~is_sgmii),                    # 1000BASE-X: Full-duplex.
                 If(is_sgmii,
-                    self.tx.config_reg[10:12].eq(sgmii_tx_speed),       # SGMII: Speed.
+                    self.tx.config_reg[10:12].eq(SGMII_1000MBPS_SPEED),       # SGMII: Speed.
                     self.tx.config_reg[12].eq(1),                       # SGMII: Full-duplex.
                     self.tx.config_reg[15].eq(self.link_up),            # SGMII: Link-up.
                 ),
@@ -386,7 +360,7 @@ class PCS32(LiteXModule):
 
         # RX Config (and consistency check).
         # ----------------------------------
-        rx_config_reg_count  = Signal(4)
+        self.rxrc = rx_config_reg_count  = Signal(4)
         rx_config_reg_last   = Signal(16)
         self.sync.eth_rx += [
             If(self.rx.seen_config_reg,
@@ -419,6 +393,10 @@ class PCS32(LiteXModule):
         self.status = CSRStatus(fields=[
             CSRField("link_up",    size=1,  offset=0,  description="Link is up."),
             CSRField("is_sgmii",   size=1,  offset=1,  description="SGMII in-use."),
+            CSRField("align",      size=1,  offset=2,  description="align"),
+            
+            CSRField("rx_reg_cnt", size=4,  offset=4,  description="rx reg cnt"),
+            
             CSRField("config_reg", size=16, offset=16, description="Link partner ability register."),
         ])
 
@@ -435,6 +413,8 @@ class PCS32(LiteXModule):
 
         self.sync += [
             self.status.fields.link_up.eq(self.link_up),
+            self.status.fields.align.eq(self.align),
+            self.status.fields.rx_reg_cnt.eq(self.rxrc),
             self.status.fields.is_sgmii.eq(self.is_sgmii),
         ]
 

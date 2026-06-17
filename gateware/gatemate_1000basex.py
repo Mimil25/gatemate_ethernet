@@ -130,7 +130,7 @@ class GateMate_1000BASEX(LiteXModule):
             p_RX_ALIGN_COMMA_ENABLE = 0x3FF,
             p_RX_SLIDE_MODE = 0,
             p_RX_COMMA_DETECT_EN_OVR = 0,
-            p_RX_COMMA_DETECT_EN = 1,
+            p_RX_COMMA_DETECT_EN = 0,
             p_RX_SLIDE = 0,
 
             # RX Equalizer
@@ -316,13 +316,13 @@ class GateMate_1000BASEX(LiteXModule):
         )
         serdes_params.update(
             # PLL and Misc. Ports
-            i_PLL_RESET_I            = self.adpll_reset | ResetSignal(),
+            i_PLL_RESET_I            = self.adpll_reset,
             o_PLL_CLK_O              = self.txoutclk, # 125 MHz
             i_LOOPBACK_I             = 0b00,
 
             # TX
             i_TX_DATA_I              = self.pcs.tx.data,
-            i_TX_RESET_I             = self.adpll_reset | ResetSignal(),
+            i_TX_RESET_I             = self.adpll_reset,
             i_TX_PCS_RESET_I         = 0,
             i_TX_PMA_RESET_I         = 0,
             i_TX_POWER_DOWN_N_I      = 1,
@@ -344,7 +344,7 @@ class GateMate_1000BASEX(LiteXModule):
 
             # RX
             i_RX_CLK_I               = ClockSignal("eth_rx"),
-            i_RX_RESET_I             = self.adpll_reset | ResetSignal(),
+            i_RX_RESET_I             = self.adpll_reset,
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
             i_RX_CDR_RESET_I         = 0,
@@ -359,8 +359,8 @@ class GateMate_1000BASEX(LiteXModule):
             i_RX_EN_EI_DETECTOR_I    = 0,
             i_RX_COMMA_DETECT_EN_I   = self.pcs.align,
             i_RX_SLIDE_I             = 0,
-            i_RX_MCOMMA_ALIGN_I      = self.pcs.align,
-            i_RX_PCOMMA_ALIGN_I      = self.pcs.align,
+            i_RX_MCOMMA_ALIGN_I      = 1, #self.pcs.align,
+            i_RX_PCOMMA_ALIGN_I      = 1, #self.pcs.align,
             o_RX_DATA_O              = self.pcs.rx.data,
             o_RX_NOT_IN_TABLE_O      = self.pcs.rx.table_err,
             o_RX_CHAR_IS_COMMA_O     = Open(),
@@ -398,9 +398,11 @@ class GateMate_1000BASEX(LiteXModule):
                     ),
                 ]
 
-        self.sync += [ # set back to comb
+        self.comb += [
             tx_reset.eq(self.reset),
-            rx_reset.eq(self.reset)
+            rx_reset.eq(self.reset | rx_cm_reset),
+            #self.cd_eth_rx.rst.eq(~rx_reset_done),
+            #self.cd_eth_tx.rst.eq(~tx_reset_done),
         ]
 
         # PLL reset
@@ -427,7 +429,7 @@ class GateMate_1000BASEX(LiteXModule):
             ).Else(
                 cdr_locked.eq(1)
             ),
-            rx_cm_reset.eq(~cdr_locked) # TODO reconnect somewhere ?
+            rx_cm_reset.eq(~cdr_locked)
         ]
 
     def add_csr(self):

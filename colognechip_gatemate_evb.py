@@ -182,7 +182,7 @@ def main():
 
     soc.platform.add_extension(colognechip_gatemate_evb.pmods_sdcard_io("PMODA"))
     if args.toolchain == "peppercorn":
-        soc.platform.toolchain._synth_opts += ""# " -noclkbuf"
+        soc.platform.toolchain._synth_opts += " -abc_new" # -luttree"# " -noclkbuf"
     if args.with_spi_sdcard:
         soc.add_spi_sdcard()
     if args.with_sdcard:
