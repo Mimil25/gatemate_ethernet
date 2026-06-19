@@ -322,7 +322,7 @@ class GateMate_1000BASEX(LiteXModule):
 
             # TX
             i_TX_DATA_I              = self.pcs.tx.data,
-            i_TX_RESET_I             = self.adpll_reset,
+            i_TX_RESET_I             = tx_reset,
             i_TX_PCS_RESET_I         = 0,
             i_TX_PMA_RESET_I         = 0,
             i_TX_POWER_DOWN_N_I      = 1,
@@ -344,7 +344,7 @@ class GateMate_1000BASEX(LiteXModule):
 
             # RX
             i_RX_CLK_I               = ClockSignal("eth_rx"),
-            i_RX_RESET_I             = self.adpll_reset,
+            i_RX_RESET_I             = rx_reset,
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
             i_RX_CDR_RESET_I         = 0,
@@ -400,10 +400,11 @@ class GateMate_1000BASEX(LiteXModule):
 
         self.comb += [
             tx_reset.eq(self.reset),
-            rx_reset.eq(self.reset | rx_cm_reset),
-            #self.cd_eth_rx.rst.eq(~rx_reset_done),
-            #self.cd_eth_tx.rst.eq(~tx_reset_done),
+            rx_reset.eq(self.reset | self.adpll_reset),
         ]
+
+        self.specials += AsyncResetSynchronizer(self.cd_eth_rx, rx_cm_reset)
+        self.specials += AsyncResetSynchronizer(self.cd_eth_tx, ~tx_reset_done)
 
         # PLL reset
         pll_reset_cycles = round(30000*sys_clk_freq//1000000000)
@@ -421,7 +422,7 @@ class GateMate_1000BASEX(LiteXModule):
         cdr_lock_counter = Signal(max=cdr_lock_time+1)
         cdr_locked = Signal()
         self.sync += [
-            If(rx_reset,
+            If(rx_reset | ~rx_reset_done,
                 cdr_locked.eq(0),
                 cdr_lock_counter.eq(0)
             ).Elif(cdr_lock_counter != cdr_lock_time,

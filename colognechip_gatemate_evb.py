@@ -19,7 +19,7 @@ from litex.soc.cores.hyperbus import HyperRAM
 
 from litex.soc.interconnect import wishbone
 
-from litex.soc.integration.soc_core import *
+from litex.soc.integration.soc import *
 from litex.soc.integration.builder import *
 from litex.soc.integration.soc import SoCRegion
 
@@ -35,7 +35,7 @@ class _CRG(LiteXModule):
         self.rst    = Signal()
         rst_n       = Signal()
         self.cd_sys = ClockDomain()
-        self.cd_sys_unbuf = ClockDomain()
+        #self.cd_sys_unbuf = ClockDomain()
 
         # # #
 
@@ -47,7 +47,7 @@ class _CRG(LiteXModule):
         self.specials += Instance("CC_USR_RSTN", o_USR_RSTN = rst_n)
 
         # PLL
-        self.pll = pll = GateMatePLL(perf_mode="economy")
+        self.pll = pll = GateMatePLL(perf_mode="speed")
         self.comb += pll.reset.eq(~rst_n | self.rst)
         pll.register_clkin(clk10, 10e6)
         pll.create_clkout(self.cd_sys, sys_clk_freq)
@@ -77,6 +77,7 @@ class BaseSoC(SoCCore):
         SoCCore.__init__(self, platform, sys_clk_freq, ident="LiteX SoC on GateMate EVB", **kwargs)
 
         # HyperRAM ---------------------------------------------------------------------------------
+        self.integrated_main_ram_size = 128 * KILOBYTE
         if not self.integrated_main_ram_size:
             # HyperRAM Parameters.
             hyperram_device     = "W958D6NW"
@@ -134,14 +135,14 @@ class BaseSoC(SoCCore):
         platform.add_period_constraint(self.eth_phy.txoutclk, self.eth_phy.tx_clk_freq)
         platform.add_period_constraint(self.eth_phy.rxoutclk, self.eth_phy.rx_clk_freq)
 
-        with_ethernet  = False
-        with_etherbone = True
+        with_ethernet  = True
+        with_etherbone = False
         eth_ip         = "192.168.1.151"
 
         if with_etherbone:
             self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
         if with_ethernet:
-            self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip)
+            self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip, software_debug=True)
 
         #platform.add_extension([
         #    ('dbg', 0, Pins('io_na:0')),
@@ -182,7 +183,7 @@ def main():
 
     soc.platform.add_extension(colognechip_gatemate_evb.pmods_sdcard_io("PMODA"))
     if args.toolchain == "peppercorn":
-        soc.platform.toolchain._synth_opts += " -abc_new" # -luttree"# " -noclkbuf"
+        soc.platform.toolchain._synth_opts += ""# -retime" # -luttree"# " -noclkbuf"
     if args.with_spi_sdcard:
         soc.add_spi_sdcard()
     if args.with_sdcard:

@@ -145,7 +145,8 @@ class PCSRX32(LiteXModule):
                       (self.data[8:16] == D( 2, 2)),  # /C2/.
                         self.seen_valid_ci.eq(1),
                         self.seen_config_reg.eq(1),
-                        NextValue(self.config_reg, self.data[16:32]),
+                        self.config_reg.eq(self.data[16:32]),
+                        #NextValue(self.config_reg, self.data[16:32]),
                     ),
                     # Check for Idle Word.
                     If((self.data[8:16] == D( 5, 6)) | # /I1/.
@@ -207,7 +208,7 @@ class PCSRX32(LiteXModule):
 
 class PCS32(LiteXModule):
     autocsr_exclude = {"ev"}
-    def __init__(self, bw=16, check_period=6e-3, breaklink_time=10e-3, more_ack_time=10e-3, sgmii_ack_time=1.6e-3, eth_tx_clk_freq=125e6, with_csr=True):
+    def __init__(self, bw=16, check_period=50e-3, breaklink_time=10e-3, more_ack_time=10e-3, sgmii_ack_time=1.6e-3, eth_tx_clk_freq=125e6, with_csr=True):
         self.tx = ClockDomainsRenamer("eth_tx")(PCSTX32())
         self.rx = ClockDomainsRenamer("eth_rx")(PCSRX32())
 
@@ -226,7 +227,6 @@ class PCS32(LiteXModule):
         # Signals.
         # --------
         self.config_empty = config_empty = Signal()
-        self.is_sgmii     = is_sgmii     = Signal()
         self.linkdown     = linkdown     = Signal()
         self.autoneg_ack  = autoneg_ack  = Signal()
 
@@ -247,7 +247,6 @@ class PCS32(LiteXModule):
         # -------
         self.breaklink_timer = breaklink_timer = ClockDomainsRenamer("eth_tx")(WaitTimer(breaklink_time * eth_tx_clk_freq))
         self.more_ack_timer  = more_ack_timer  = ClockDomainsRenamer("eth_tx")(WaitTimer(more_ack_time  * eth_tx_clk_freq))
-        self.sgmii_ack_timer = sgmii_ack_timer = ClockDomainsRenamer("eth_tx")(WaitTimer(sgmii_ack_time * eth_tx_clk_freq))
 
         # Checker.
         # --------
@@ -263,48 +262,48 @@ class PCS32(LiteXModule):
             ).Else(
                 checker_count.eq(checker_count - 1)
             ),
-            If(seen_valid_ci.o, checker_error.eq(0)),
+            If(seen_valid_ci.o,
+                checker_error.eq(0),
+                checker_count.eq(checker_max)
+            ),
             If(checker_tick,    checker_error.eq(1))
         ]
 
-        # Linkdown/Speed Detection.
+        # Linkdown Detection.
         # -------------------------
-        sgmii_speed_valid = Signal()
         self.comb += [
-            is_sgmii.eq(self.lp_abi.o[0]),
-            sgmii_speed_valid.eq(self.lp_abi.o[10:12] != 0b11),
             # Detect that link is down:
             # - 1000BASE-X : linkup can be inferred by non-empty reg.
-            # - SGMII      : linkup is indicated with bit 15.
-            If(~is_sgmii,
-                linkdown.eq(self.lp_abi.o == 0),
-            ).Else(
-                linkdown.eq(~self.lp_abi.o[15] | ~sgmii_speed_valid),
-            )
+            linkdown.eq(self.lp_abi.o == 0),
         ]
 
         # TX Config.
         # ----------
         self.comb += [
-            If(~config_empty,
-                self.tx.config_reg[0].eq(is_sgmii),                     # SGMII: SGMII in-use.
-                self.tx.config_reg[5].eq(~is_sgmii),                    # 1000BASE-X: Full-duplex.
-                If(is_sgmii,
-                    self.tx.config_reg[10:12].eq(SGMII_1000MBPS_SPEED),       # SGMII: Speed.
-                    self.tx.config_reg[12].eq(1),                       # SGMII: Full-duplex.
-                    self.tx.config_reg[15].eq(self.link_up),            # SGMII: Link-up.
-                ),
-                self.tx.config_reg[14].eq(autoneg_ack),                 # SGMII/1000BASE-X: Acknowledge Bit.
+            If(~self.config_empty,
+                self.tx.config_reg[0:5].eq(0),                  # reserved
+                self.tx.config_reg[5].eq(1),                    # 1000BASE-X: Full-duplex.
+                self.tx.config_reg[6].eq(0),                    # 1000BASE-X: Half-duplex.
+                self.tx.config_reg[7:9].eq(0),                  # no pause capability
+                self.tx.config_reg[9:12].eq(0b100),                 # reserved
+                self.tx.config_reg[12:14].eq(0),                # TODO remote fault encoding 0: OK, 1: offline, 2: link failure, 3: auto-negotiation error
+                self.tx.config_reg[14].eq(autoneg_ack),         # acknowledge
+                self.tx.config_reg[15].eq(0),                   # next page req
+            ).Else(
+                self.tx.config_reg.eq(0),
             )
         ]
 
         # FSM.
         # ----
         self.fsm = fsm = ClockDomainsRenamer("eth_tx")(FSM())
+        self.fsm_state = Signal(3)
         # AN_ENABLE.
         fsm.act("AUTONEG-BREAKLINK",
+            self.fsm_state.eq(1),
+            self.tx.config_reg.eq(0),
+            self.align.eq(1),
             self.tx.config_valid.eq(1),
-            config_empty.eq(1),
             breaklink_timer.wait.eq(1),
             If(breaklink_timer.done,
                 NextState("AUTONEG-WAIT-ABI")
@@ -312,47 +311,49 @@ class PCS32(LiteXModule):
         )
         # ABILITY_DETECT.
         fsm.act("AUTONEG-WAIT-ABI",
+            self.fsm_state.eq(2),
             self.align.eq(1),
             self.tx.config_valid.eq(1),
             If(rx_config_reg_abi.o,
                 NextState("AUTONEG-WAIT-ACK")
             ),
-            If(checker_tick & checker_error,
+            If(checker_error,
                 self.restart.eq(1),
                 NextState("AUTONEG-BREAKLINK")
             )
         )
         # ACKNOWLEDGE_DETECT.
         fsm.act("AUTONEG-WAIT-ACK",
+            self.fsm_state.eq(3),
             self.tx.config_valid.eq(1),
             autoneg_ack.eq(1),
             If(rx_config_reg_ack.o,
                 NextState("AUTONEG-SEND-MORE-ACK")
             ),
-            If(checker_tick & checker_error,
+            If(checker_error,
                 self.restart.eq(1),
                 NextState("AUTONEG-BREAKLINK")
             )
         )
         # COMPLETE_ACKNOWLEDGE.
         fsm.act("AUTONEG-SEND-MORE-ACK",
+            self.fsm_state.eq(4),
             self.tx.config_valid.eq(1),
             autoneg_ack.eq(1),
-            more_ack_timer.wait.eq(~is_sgmii),
-            sgmii_ack_timer.wait.eq(is_sgmii),
-            If((is_sgmii & sgmii_ack_timer.done) |
-                (~is_sgmii & more_ack_timer.done),
+            more_ack_timer.wait.eq(1),
+            If(more_ack_timer.done,
                 NextState("RUNNING")
             ),
-            If(checker_tick & checker_error,
+            If(checker_error,
                 self.restart.eq(1),
                 NextState("AUTONEG-BREAKLINK")
             )
         )
         # LINK_OK.
         fsm.act("RUNNING",
+            self.fsm_state.eq(5),
             self.link_up.eq(~linkdown),
-            If((checker_tick & checker_error) | linkdown,
+            If(checker_error | linkdown,
                 self.restart.eq(1),
                 NextState("AUTONEG-BREAKLINK")
             )
@@ -366,7 +367,7 @@ class PCS32(LiteXModule):
             If(self.rx.seen_config_reg,
                 # Consistency Count/Check.
                 rx_config_reg_last.eq(self.rx.config_reg),
-                If(self.rx.config_reg != rx_config_reg_last,
+                If((self.rx.config_reg[0:14] != rx_config_reg_last[0:14]) | (self.rx.config_reg[15] != rx_config_reg_last[15]),
                     rx_config_reg_count.eq(8 - 1)
                 ).Else(
                     If(rx_config_reg_count != 0,
@@ -392,10 +393,11 @@ class PCS32(LiteXModule):
     def add_csr(self):
         self.status = CSRStatus(fields=[
             CSRField("link_up",    size=1,  offset=0,  description="Link is up."),
-            CSRField("is_sgmii",   size=1,  offset=1,  description="SGMII in-use."),
-            CSRField("align",      size=1,  offset=2,  description="align"),
+            CSRField("align",      size=1,  offset=1,  description="align"),
+            CSRField("restart",      size=1,  offset=2,  description="restart"),
             
-            CSRField("rx_reg_cnt", size=4,  offset=4,  description="rx reg cnt"),
+            CSRField("txisk", size=4,  offset=4),
+            CSRField("fsm_state", size=3,  offset=8),
             
             CSRField("config_reg", size=16, offset=16, description="Link partner ability register."),
         ])
@@ -411,11 +413,11 @@ class PCS32(LiteXModule):
             self.status.fields.config_reg.eq(self.lp_abi_csr.o)
         ]
 
-        self.sync += [
+        self.comb += [
             self.status.fields.link_up.eq(self.link_up),
             self.status.fields.align.eq(self.align),
-            self.status.fields.rx_reg_cnt.eq(self.rxrc),
-            self.status.fields.is_sgmii.eq(self.is_sgmii),
+            self.status.fields.txisk.eq(self.tx.char_is_k),
+            self.status.fields.fsm_state.eq(self.fsm_state),
         ]
 
         self.link_up_timer = link_up_timer = WaitTimer(int(LiteXContext.top.sys_clk_freq))
