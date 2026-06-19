@@ -405,6 +405,12 @@ class GateMate_1000BASEX(LiteXModule):
 
         self.specials += AsyncResetSynchronizer(self.cd_eth_rx, rx_cm_reset)
         self.specials += AsyncResetSynchronizer(self.cd_eth_tx, ~tx_reset_done)
+        
+        ps_restart = PulseSynchronizer("eth_tx", "sys")
+        self.submodules += ps_restart
+        self.comb += [
+            ps_restart.i.eq(self.pcs.restart),
+        ]
 
         # PLL reset
         pll_reset_cycles = round(30000*sys_clk_freq//1000000000)
@@ -414,6 +420,10 @@ class GateMate_1000BASEX(LiteXModule):
                 self.adpll_reset.eq(0),
             ).Else(
                 reset_counter.eq(reset_counter + 1),
+            ),
+            If(ps_restart.o,
+                reset_counter.eq(0),
+                self.adpll_reset.eq(1),
             )
         ]
 
