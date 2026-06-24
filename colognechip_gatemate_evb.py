@@ -28,6 +28,8 @@ from gateware.gatemate_1000basex import GateMate_1000BASEX
 
 from litex.soc.cores.led import LedChaser
 
+from litescope import LiteScopeAnalyzer
+
 # CRG ----------------------------------------------------------------------------------------------
 
 class _CRG(LiteXModule):
@@ -160,6 +162,15 @@ class BaseSoC(SoCCore):
         #self.comb += platform.request('dbg').eq(ClockSignal('sys'))
         #
         #self.comb += self.eth_phy.rx_prbs_cnt_rst.eq(platform.request('dbg_in'))
+
+        #self.scope = LiteScopeAnalyzer(
+        #        [
+        #            self.eth_phy.pcs.tx.char_is_k,
+        #        ],
+        #        depth = 1000,
+        #        clock_domain = "eth_tx",
+        #        csr_csv = "test/analyzer.csv",
+        #        )
         
 
 # Build --------------------------------------------------------------------------------------------

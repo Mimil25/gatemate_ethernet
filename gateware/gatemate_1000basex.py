@@ -31,7 +31,10 @@ class GateMate_1000BASEX(LiteXModule):
         assert refclk_freq in [100e6, 125e6]
         self.dw = 32 # assert dw in [16, 32, 64]
 
-        self.pcs = PCS32()
+        self.rx_clk_freq = self.linerate / (self.dw *1.25)
+        self.tx_clk_freq = self.linerate / (self.dw *1.25)
+
+        self.pcs = PCS32(eth_tx_clk_freq=self.tx_clk_freq)
 
         self.sink   = self.pcs.sink
         self.source = self.pcs.source
@@ -43,9 +46,6 @@ class GateMate_1000BASEX(LiteXModule):
         # for specifying clock constraints.
         self.txoutclk = Signal()
         self.rxoutclk = Signal()
-
-        self.rx_clk_freq = self.linerate / (self.dw *1.25)
-        self.tx_clk_freq = self.linerate / (self.dw *1.25)
 
         self.reset = Signal()
 
@@ -359,8 +359,8 @@ class GateMate_1000BASEX(LiteXModule):
             i_RX_EN_EI_DETECTOR_I    = 0,
             i_RX_COMMA_DETECT_EN_I   = self.pcs.align,
             i_RX_SLIDE_I             = 0,
-            i_RX_MCOMMA_ALIGN_I      = 1, #self.pcs.align,
-            i_RX_PCOMMA_ALIGN_I      = 1, #self.pcs.align,
+            i_RX_MCOMMA_ALIGN_I      = self.pcs.align,
+            i_RX_PCOMMA_ALIGN_I      = self.pcs.align,
             o_RX_DATA_O              = self.pcs.rx.data,
             o_RX_NOT_IN_TABLE_O      = self.pcs.rx.table_err,
             o_RX_CHAR_IS_COMMA_O     = Open(),
@@ -409,7 +409,7 @@ class GateMate_1000BASEX(LiteXModule):
         ps_restart = PulseSynchronizer("eth_tx", "sys")
         self.submodules += ps_restart
         self.comb += [
-            ps_restart.i.eq(self.pcs.restart),
+            ps_restart.i.eq(self.pcs.restart),  # TODO is this the cause of the rx reset loop ? if so why are there restarts
         ]
 
         # PLL reset
