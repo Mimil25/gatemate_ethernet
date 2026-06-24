@@ -227,9 +227,9 @@ class PCS32(LiteXModule):
         self.sink      = stream.Endpoint(eth_phy_description(32))
         self.source    = stream.Endpoint(eth_phy_description(32))
 
+        self.align   = Signal(reset=0)
         self.link_up = Signal()
         self.restart = Signal()
-        self.align   = Signal()
 
         self.lp_abi = BusSynchronizer(16, "eth_rx", "eth_tx")
 
@@ -307,11 +307,11 @@ class PCS32(LiteXModule):
         # AN_ENABLE.
         fsm.act("AUTONEG-BREAKLINK",
             self.fsm_state.eq(1),
-            self.tx.config_reg.eq(0),
-            self.align.eq(1),
+            #self.tx.config_reg.eq(0),
             self.tx.config_valid.eq(1),
             breaklink_timer.wait.eq(1),
             NextValue(autoneg_ack, 0),
+            NextValue(self.align, 1),
             If(breaklink_timer.done,
                 NextState("AUTONEG-WAIT-ABI")
             )
@@ -319,11 +319,23 @@ class PCS32(LiteXModule):
         # ABILITY_DETECT.
         fsm.act("AUTONEG-WAIT-ABI",
             self.fsm_state.eq(2),
-            self.align.eq(1),
             self.tx.config_valid.eq(1),
-            If(rx_config_reg_abi.o,
-                NextState("AUTONEG-WAIT-ACK"),
+            If(rx_config_reg_abi.o, # Got matching abi reg
+                NextState("AUTONEG-SEND-MORE-ABI"),
+                NextValue(self.align, 0),
+            ),
+            If(checker_error,
+                self.restart.eq(1),
+                NextState("AUTONEG-BREAKLINK")
+            )
+        )
+        fsm.act("AUTONEG-SEND-MORE-ABI",
+            self.fsm_state.eq(6),
+            self.tx.config_valid.eq(1),
+            more_ack_timer.wait.eq(1),
+            If(more_ack_timer.done,
                 NextValue(autoneg_ack, 1),
+                NextState("AUTONEG-WAIT-ACK")
             ),
             If(checker_error,
                 self.restart.eq(1),
@@ -384,14 +396,15 @@ class PCS32(LiteXModule):
                         # Acknowledgement.
                         If(self.rx.config_reg[14],
                             rx_config_reg_ack.i.eq(1),
+                        ),
                         # Ability match.
-                        ).Else(
-                            rx_config_reg_abi.i.eq(1),
-                        )
+                        rx_config_reg_abi.i.eq(1),
+                        self.lp_abi.i.eq(self.rx.config_reg),
                     )
                 ),
-                self.lp_abi.i.eq(self.rx.config_reg)
-            )
+            ),
+            #If(rx_config_reg_abi.i, rx_config_reg_abi.i.eq(0)), # this needs to ba a pulse 
+            #If(rx_config_reg_ack.i, rx_config_reg_ack.i.eq(0)), # this needs to ba a pulse 
         ]
 
         if with_csr:

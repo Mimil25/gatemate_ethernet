@@ -47,22 +47,29 @@ class GateMate_1000BASEX(LiteXModule):
         self.txoutclk = Signal()
         self.rxoutclk = Signal()
 
-        self.reset = Signal()
+        self.reset = Signal() # sync reset
 
-        if with_csr:
-            self.add_csr()
 
         # # #
 
         # SerDes transceiver.
-        self.adpll_reset   = Signal(reset=1)
+        adpll_reset   = Signal(reset=1)
 
         tx_reset      = Signal()
+
         tx_reset_done = Signal()
 
         rx_reset      = Signal()
-        rx_cm_reset   = Signal(reset=1)
         rx_reset_done = Signal()
+        
+        align = Signal()
+        align_done = Signal()
+
+        # RegFile
+        rf_en = Signal()
+        rf_addr = Signal(8)
+        rf_do = Signal(16)
+        rf_rdy = Signal()
 
         adpll_settings = {
             100e6: {
@@ -316,7 +323,7 @@ class GateMate_1000BASEX(LiteXModule):
         )
         serdes_params.update(
             # PLL and Misc. Ports
-            i_PLL_RESET_I            = self.adpll_reset,
+            i_PLL_RESET_I            = adpll_reset,
             o_PLL_CLK_O              = self.txoutclk, # 125 MHz
             i_LOOPBACK_I             = 0b00,
 
@@ -375,14 +382,14 @@ class GateMate_1000BASEX(LiteXModule):
             o_RX_CLK_O               = self.rxoutclk,
             
             # Regfile Ports
-            i_REGFILE_CLK_I          = 0,#ClockSignal('sys'),
+            i_REGFILE_CLK_I          = 0, #ClockSignal('sys'),
             i_REGFILE_WE_I           = 0,
-            i_REGFILE_EN_I           = 0,
-            i_REGFILE_ADDR_I         = 0,
+            i_REGFILE_EN_I           = 0, #rf_en,
+            i_REGFILE_ADDR_I         = 0, #rf_addr,
             i_REGFILE_DI_I           = 0,
-            i_REGFILE_MASK_I         = 0, #0xFFFF,
-            o_REGFILE_DO_O           = Open(),
-            o_REGFILE_RDY_O          = Open(),
+            i_REGFILE_MASK_I         = 0xFFFF,
+            o_REGFILE_DO_O           = Open(),#rf_do,
+            o_REGFILE_RDY_O          = Open(),#rf_rdy,
         )
 
         self.specials += [
@@ -398,54 +405,94 @@ class GateMate_1000BASEX(LiteXModule):
                     ),
                 ]
 
-        self.comb += [
-            tx_reset.eq(self.reset),
-            rx_reset.eq(self.reset | self.adpll_reset),
-        ]
-
-        self.specials += AsyncResetSynchronizer(self.cd_eth_rx, rx_cm_reset)
-        self.specials += AsyncResetSynchronizer(self.cd_eth_tx, ~tx_reset_done)
+        rx_cd_reset = Signal(reset=1)
+        tx_cd_reset = Signal(reset=1)
+        self.specials += AsyncResetSynchronizer(self.cd_eth_rx, rx_cd_reset)
+        self.specials += AsyncResetSynchronizer(self.cd_eth_tx, tx_cd_reset)
         
-        ps_restart = PulseSynchronizer("eth_tx", "sys")
-        self.submodules += ps_restart
+        pcs_restart = PulseSynchronizer("eth_tx", "sys")
+        self.submodules += pcs_restart
         self.comb += [
-            ps_restart.i.eq(self.pcs.restart),  # TODO is this the cause of the rx reset loop ? if so why are there restarts
+            pcs_restart.i.eq(self.pcs.restart),
         ]
-
-        # PLL reset
+        
         pll_reset_cycles = round(30000*sys_clk_freq//1000000000)
         reset_counter    = Signal(max=pll_reset_cycles+1)
-        self.sync += [
-            If(reset_counter >= pll_reset_cycles,
-                self.adpll_reset.eq(0),
-            ).Else(
-                reset_counter.eq(reset_counter + 1),
-            ),
-            If(ps_restart.o,
-                reset_counter.eq(0),
-                self.adpll_reset.eq(1),
+        
+        self.reset_fsm = FSM()
+        self.reset_fsm_state = Signal(4)
+        self.reset_fsm.act('RESET',
+            self.reset_fsm_state.eq(1),
+            NextValue(adpll_reset, 1),
+            NextValue(rx_cd_reset, 1),
+            NextValue(tx_cd_reset, 1),
+            NextValue(reset_counter, 0),
+            If(~self.reset,
+                NextState('START'),
             )
-        ]
-
-        # Assume CDR lock time is 50,000 UI
-        cdr_lock_time = round(sys_clk_freq*50e3/self.linerate)
-        cdr_lock_counter = Signal(max=cdr_lock_time+1)
-        cdr_locked = Signal()
-        self.sync += [
-            If(rx_reset | ~rx_reset_done,
-                cdr_locked.eq(0),
-                cdr_lock_counter.eq(0)
-            ).Elif(cdr_lock_counter != cdr_lock_time,
-                cdr_lock_counter.eq(cdr_lock_counter + 1)
-            ).Else(
-                cdr_locked.eq(1)
+        )
+        self.reset_fsm.act('START',
+            self.reset_fsm_state.eq(2),
+            NextValue(reset_counter, reset_counter + 1),
+            If(reset_counter >= pll_reset_cycles,
+                NextValue(adpll_reset, 0),
+                NextState('WAIT_SERDES_RESET'),
             ),
-            rx_cm_reset.eq(~cdr_locked)
-        ]
+        )
+        self.reset_fsm.act('WAIT_SERDES_RESET',
+            self.reset_fsm_state.eq(3),
+            If(rx_reset_done & tx_reset_done,
+                NextValue(reset_counter, 0),
+                NextState('WAIT_CDR_1'),
+            ),
+        )
+        self.reset_fsm.act('WAIT_CDR_1',
+            self.reset_fsm_state.eq(5),
+            NextValue(reset_counter, reset_counter + 1),
+            If(reset_counter >= pll_reset_cycles, # maybe a shorter wait is enough ?
+                NextValue(rx_cd_reset, 0),
+                NextValue(tx_cd_reset, 0),
+                NextState('RUN'),
+            ),
+        )
+        self.reset_fsm.act('RUN',
+            self.reset_fsm_state.eq(6),
+            If(self.reset,
+                NextState('RESET'),
+            ),
+            If(pcs_restart.o,
+                NextValue(rx_cd_reset, 1),
+                NextValue(tx_cd_reset, 1),
+                NextValue(reset_counter, 0),
+                NextState('WAIT_CDR_1'),
+            ),
+        )
+        
+        if with_csr:
+            self._reset = CSRStorage()
+            self.comb += self.reset.eq(self._reset.storage)
+            self.status = CSRStatus(fields=[
+                CSRField("fsm_state", size=4,  offset=0),
+                CSRField("rf_en", size=1,  offset=4),
+                CSRField("rf_rdy", size=1,  offset=5),
+                CSRField("rx_rst", size=1,  offset=6),
+                CSRField("tx_rst", size=1,  offset=7),
 
-    def add_csr(self):
-        self._reset = CSRStorage()
-        self.comb += self.reset.eq(self._reset.storage)
+                CSRField("rf_addr", size=8,  offset=8),
+                CSRField("rf_do", size=16,  offset=16),
+            ])
+
+            self.comb += [
+                self.status.fields.fsm_state.eq(self.reset_fsm_state),
+                #self.status.fields.rf_en.eq(rf_en),
+                #self.status.fields.rf_rdy.eq(rf_rdy),
+                #self.status.fields.rf_addr.eq(rf_addr),
+                #self.status.fields.rf_do.eq(rf_do),
+                
+                self.status.fields.rx_rst.eq(rx_cd_reset),
+                self.status.fields.tx_rst.eq(tx_cd_reset),
+            ]
+
 
     def do_finalize(self):
         self.specials += Instance("CC_SERDES", **self.serdes_params)
