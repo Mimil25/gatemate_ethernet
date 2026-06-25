@@ -416,7 +416,7 @@ class GateMate_1000BASEX(LiteXModule):
             pcs_restart.i.eq(self.pcs.restart),
         ]
         
-        pll_reset_cycles = round(30000*sys_clk_freq//1000000000)
+        pll_reset_cycles = round(50e-3*sys_clk_freq)
         reset_counter    = Signal(max=pll_reset_cycles+1)
         
         self.reset_fsm = FSM()
@@ -427,7 +427,7 @@ class GateMate_1000BASEX(LiteXModule):
             NextValue(rx_cd_reset, 1),
             NextValue(tx_cd_reset, 1),
             NextValue(reset_counter, 0),
-            If(~self.reset,
+            If(~self.reset & ~pcs_restart.o,
                 NextState('START'),
             )
         )
@@ -452,6 +452,7 @@ class GateMate_1000BASEX(LiteXModule):
             If(reset_counter >= pll_reset_cycles, # maybe a shorter wait is enough ?
                 NextValue(rx_cd_reset, 0),
                 NextValue(tx_cd_reset, 0),
+                NextValue(reset_counter, 0),
                 NextState('RUN'),
             ),
         )
@@ -460,7 +461,9 @@ class GateMate_1000BASEX(LiteXModule):
             If(self.reset,
                 NextState('RESET'),
             ),
-            If(pcs_restart.o,
+            If(reset_counter < pll_reset_cycles,
+                NextValue(reset_counter, reset_counter + 1),
+            ).Elif(pcs_restart.o,
                 NextValue(rx_cd_reset, 1),
                 NextValue(tx_cd_reset, 1),
                 NextValue(reset_counter, 0),
