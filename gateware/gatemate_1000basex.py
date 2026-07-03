@@ -19,6 +19,8 @@ from litex.soc.cores.clock.colognechip import GateMatePLL
 from liteeth.common import *
 
 from .pcs32_1000basex import *
+from .mac_cdc import MacPacketSlowToFastCDC
+from .cc_fifo import CC_AsyncFIFO, CC_AsyncFIFOBuffered
 
 # GateMate_1000BASEX PHY ---------------------------------------------------------------------------------
 
@@ -34,14 +36,29 @@ class GateMate_1000BASEX(LiteXModule):
         self.rx_clk_freq = self.linerate / (self.dw *1.25)
         self.tx_clk_freq = self.linerate / (self.dw *1.25)
 
-        self.pcs = PCS32(eth_tx_clk_freq=self.tx_clk_freq)
+        self.cd_eth_phy_tx = ClockDomain()
+        self.cd_eth_phy_rx = ClockDomain()
+        
+        self.cd_eth_tx = ClockDomain()
+        self.cd_eth_rx = ClockDomain()
 
-        self.sink   = self.pcs.sink
+        self.pcs = PCS32(eth_phy_tx_clk_freq=self.tx_clk_freq)
+        self.tx_buffer = ClockDomainsRenamer({
+                "write": "eth_tx", # sys clock
+                "read": "eth_phy_tx",
+            })(MacPacketSlowToFastCDC(self.dw, fifo_impl=CC_AsyncFIFOBuffered))
+
+        self.sink   = self.tx_buffer.sink
+        self.comb  += self.pcs.sink.connect(self.tx_buffer.source)
         self.source = self.pcs.source
         self.link_up = self.pcs.link_up
 
-        self.cd_eth_tx = ClockDomain()
-        self.cd_eth_rx = ClockDomain()
+        self.comb += [
+            self.cd_eth_rx.clk.eq(self.cd_eth_phy_rx.clk),
+            self.cd_eth_rx.rst.eq(self.cd_eth_phy_rx.rst),
+            self.cd_eth_tx.clk.eq(ClockDomain('sys').clk),
+            self.cd_eth_tx.rst.eq(ClockDomain('sys').rst),
+        ]
 
         # for specifying clock constraints.
         self.txoutclk = Signal()
@@ -147,7 +164,7 @@ class GateMate_1000BASEX(LiteXModule):
             p_RX_EQA_CKP_LF = 0xA3,
             p_RX_EQA_CKP_HF = 0xA3,
             p_RX_EQA_CKP_OFFSET = 0x01,
-            p_RX_EN_EQA = 1,
+            p_RX_EN_EQA = 0,
             p_RX_EQA_LOCK_CFG = 0,
             p_RX_TH_MON1 = 8,
             p_RX_EN_EQA_EXT_VALUE = 0,
@@ -343,14 +360,14 @@ class GateMate_1000BASEX(LiteXModule):
             i_TX_CHAR_DISPVAL_I      = 0,
             i_TX_ELEC_IDLE_I         = 0,
             i_TX_DETECT_RX_I         = 1,
-            i_TX_CLK_I               = ClockSignal("eth_tx"),
+            i_TX_CLK_I               = ClockSignal("eth_phy_tx"),
             o_TX_DETECT_RX_DONE_O    = Open(),
             o_TX_DETECT_RX_PRESENT_O = Open(),
             o_TX_BUF_ERR_O           = Open(),
             o_TX_RESET_DONE_O        = tx_reset_done,
 
             # RX
-            i_RX_CLK_I               = ClockSignal("eth_rx"),
+            i_RX_CLK_I               = ClockSignal("eth_phy_rx"),
             i_RX_RESET_I             = rx_reset,
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
@@ -396,21 +413,21 @@ class GateMate_1000BASEX(LiteXModule):
                 Instance(
                     'CC_BUFG',
                     i_I = self.txoutclk,
-                    o_O = self.cd_eth_tx.clk,
+                    o_O = self.cd_eth_phy_tx.clk,
                     ),
                 Instance(
                     'CC_BUFG',
                     i_I = self.rxoutclk,
-                    o_O = self.cd_eth_rx.clk,
+                    o_O = self.cd_eth_phy_rx.clk,
                     ),
                 ]
 
         rx_cd_reset = Signal(reset=1)
         tx_cd_reset = Signal(reset=1)
-        self.specials += AsyncResetSynchronizer(self.cd_eth_rx, rx_cd_reset)
-        self.specials += AsyncResetSynchronizer(self.cd_eth_tx, tx_cd_reset)
+        self.specials += AsyncResetSynchronizer(self.cd_eth_phy_rx, rx_cd_reset)
+        self.specials += AsyncResetSynchronizer(self.cd_eth_phy_tx, tx_cd_reset)
         
-        pcs_restart = PulseSynchronizer("eth_tx", "sys")
+        pcs_restart = PulseSynchronizer("eth_phy_tx", "sys")
         self.submodules += pcs_restart
         self.comb += [
             pcs_restart.i.eq(self.pcs.restart),

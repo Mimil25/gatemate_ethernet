@@ -144,7 +144,7 @@ class BaseSoC(SoCCore):
         if with_etherbone:
             self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
         if with_ethernet:
-            self.add_ethernet(phy=self.eth_phy, dynamic_ip=False, local_ip=eth_ip, software_debug=True)
+            self.add_ethernet(phy=self.eth_phy, data_width=32, dynamic_ip=False, local_ip=eth_ip, software_debug=True, with_timing_constraints=True)
 
         #platform.add_extension([
         #    ('dbg', 0, Pins('io_na:0')),

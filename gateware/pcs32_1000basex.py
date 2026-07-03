@@ -33,7 +33,7 @@ class PCSTX32(LiteXModule):
     def __init__(self):
         self.config_valid = Signal()                               # Config valid.
         self.config_reg   = Signal(16)                             # Config register (16-bit).
-        self.sink         = sink = stream.Endpoint([("data", 32)])  # Data input.
+        self.sink         = sink = stream.Endpoint([("data", 32), ("last_be", 4)])  # Data input.
 
         # PHY ports output
         self.char_is_k = Signal(4) # is K output
@@ -41,8 +41,6 @@ class PCSTX32(LiteXModule):
 
         # Signals.
         # --------
-        count  = Signal() # Byte counter for config register.
-        parity = Signal() # Parity for /R/ extension.
         ctype  = Signal() # Toggles config type.
 
         # FSM.
@@ -71,9 +69,9 @@ class PCSTX32(LiteXModule):
                 ).Else(
                     NextValue(self.data, Cat( # IDLE TODO handle disparity
                         K(28, 5), # D(5, 6), 
-                        D(16, 2), 
                         D(5, 6), 
-                        D(16, 2), 
+                        D(5, 6), 
+                        D(5, 6), 
                     )),
                     # NextState("IDLE")
                 )
@@ -86,7 +84,7 @@ class PCSTX32(LiteXModule):
                 NextValue(self.char_is_k, 0b0000),
                 NextValue(self.data, sink.data),
             ).Else(
-                NextValue(self.char_is_k, 0b1111),
+                NextValue(self.char_is_k, 0b1111), # TODO handle unaligned ends
                 NextValue(self.data, Cat(
                     K(29, 7), # End-of-frame /T/.
                     K(23, 7), # Carrier Extend /R/.
@@ -109,7 +107,7 @@ class PCSRX32(LiteXModule):
         self.error_data      = Signal(32) # data capture in last unexpected state
         self.error_char_is_k = Signal(4)  # char_is_k capture in last unexpected state
         self.is_idle         = Signal()
-        self.source          = source = stream.Endpoint([("data", 32), ("error", 1)]) # Data output.
+        self.source          = source = stream.Endpoint([("data", 32), ("last_be", 4), ("error", 4)]) # Data output.
 
         # PHY ports inputs
         self.data = Signal(32)
@@ -149,14 +147,14 @@ class PCSRX32(LiteXModule):
                 self.error_data.eq(data),
                 self.error_char_is_k.eq(char_is_k),
             ),
-            If((self.error_count == 0xff) & self.seen_valid_ci, # start error count once rx is aligned
+            If((self.error_count == 0xff) & self.seen_config_reg, # start error count once rx is aligned
                 self.error_count.eq(0),
             ),
         ]
 
         # Buffer.
         # -------
-        self.buffer = buffer = stream.Buffer([("data", 32)], pipe_valid=True, pipe_ready=False)
+        self.buffer = buffer = stream.Buffer([("data", 32), ("last_be", 4)], pipe_valid=True, pipe_ready=False)
         self.comb += [
             buffer.source.connect(source, omit={"last", "error"}),
             source.last.eq(buffer.source.valid & ~buffer.sink.valid), # Last when next is not valid.
@@ -192,6 +190,7 @@ class PCSRX32(LiteXModule):
                 If(data[0:8] == K(27, 7),
                     eth_invalid.eq(0),
                     NextValue(buffer.sink.valid, 1),
+                    NextValue(buffer.sink.last_be, 0),
                     NextValue(buffer.sink.data, Cat(
                         0x55, # First Preamble Byte.
                         data[8:32]
@@ -207,12 +206,14 @@ class PCSRX32(LiteXModule):
                 # Receive Data.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.last_be, 0),
                 NextValue(buffer.sink.data, data),
             ),
             If((char_is_k == 1) & (data[0:8] == K(29, 7)) & ~invalid,
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 0),
+                NextValue(buffer.sink.last_be, 1),
                 NextState("START"),
                 eth_invalid.eq(1),
             ),
@@ -220,6 +221,7 @@ class PCSRX32(LiteXModule):
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.last_be, 0b0010),
                 NextValue(buffer.sink.data, data),
                 NextState("START"),
             ),
@@ -227,6 +229,7 @@ class PCSRX32(LiteXModule):
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.last_be, 0b0100),
                 NextValue(buffer.sink.data, data),
                 NextState("START"),
             ),
@@ -234,6 +237,7 @@ class PCSRX32(LiteXModule):
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
+                NextValue(buffer.sink.last_be, 0b1000),
                 NextValue(buffer.sink.data, data),
                 NextState("START"),
             ), #.Else(
@@ -252,9 +256,9 @@ class PCSRX32(LiteXModule):
 
 class PCS32(LiteXModule):
     autocsr_exclude = {"ev"}
-    def __init__(self, bw=16, check_period=6e-3, breaklink_time=10e-3, more_ack_time=10e-3, sgmii_ack_time=1.6e-3, eth_tx_clk_freq=125e6, with_csr=True):
-        self.tx = ClockDomainsRenamer("eth_tx")(PCSTX32())
-        self.rx = ClockDomainsRenamer("eth_rx")(PCSRX32())
+    def __init__(self, bw=16, check_period=6e-3, breaklink_time=10e-3, more_ack_time=100e-3, sgmii_ack_time=1.6e-3, eth_phy_tx_clk_freq=125e6, with_csr=True):
+        self.tx = ClockDomainsRenamer("eth_phy_tx")(PCSTX32())
+        self.rx = ClockDomainsRenamer("eth_phy_rx")(PCSRX32())
 
         # MAC side streams
         self.sink      = stream.Endpoint(eth_phy_description(32))
@@ -264,7 +268,7 @@ class PCS32(LiteXModule):
         self.link_up = Signal()
         self.restart = Signal()
 
-        self.lp_abi = BusSynchronizer(16, "eth_rx", "eth_tx")
+        self.lp_abi = BusSynchronizer(16, "eth_phy_rx", "eth_phy_tx")
 
         # # #
 
@@ -274,20 +278,19 @@ class PCS32(LiteXModule):
         self.autoneg_ack  = autoneg_ack  = Signal()
 
         seen_ack = Signal()
-        seen_abi = Signal()
 
         # Sink -> TX / RX -> Source.
         self.comb += [
-            self.sink.connect(self.tx.sink,     omit={"last_be", "error"}),
-            self.rx.source.connect(self.source, omit={"last_be"}),
+            self.sink.connect(self.tx.sink, omit={"error"}),
+            self.rx.source.connect(self.source),
         ]
 
         # Pulse Synchronizers.
         # --------------------
-        self.seen_valid_ci     = seen_valid_ci     = PulseSynchronizer("eth_rx", "eth_tx")
-        self.rx_config_reg_abi = rx_config_reg_abi = PulseSynchronizer("eth_rx", "eth_tx")
-        self.rx_config_reg_ack = rx_config_reg_ack = PulseSynchronizer("eth_rx", "eth_tx")
-        self.rx_is_idle        = rx_is_idle        = PulseSynchronizer("eth_rx", "eth_tx")
+        self.seen_valid_ci     = seen_valid_ci     = PulseSynchronizer("eth_phy_rx", "eth_phy_tx")
+        self.rx_config_reg_abi = rx_config_reg_abi = PulseSynchronizer("eth_phy_rx", "eth_phy_tx")
+        self.rx_config_reg_ack = rx_config_reg_ack = PulseSynchronizer("eth_phy_rx", "eth_phy_tx")
+        self.rx_is_idle        = rx_is_idle        = PulseSynchronizer("eth_phy_rx", "eth_phy_tx")
         
         self.comb += [
             seen_valid_ci.i.eq(self.rx.seen_valid_ci),
@@ -296,16 +299,16 @@ class PCS32(LiteXModule):
 
         # Timers.
         # -------
-        self.breaklink_timer = breaklink_timer = ClockDomainsRenamer("eth_tx")(WaitTimer(breaklink_time * eth_tx_clk_freq))
-        self.more_ack_timer  = more_ack_timer  = ClockDomainsRenamer("eth_tx")(WaitTimer(more_ack_time  * eth_tx_clk_freq))
+        self.breaklink_timer = breaklink_timer = ClockDomainsRenamer("eth_phy_tx")(WaitTimer(breaklink_time * eth_phy_tx_clk_freq))
+        self.more_ack_timer  = more_ack_timer  = ClockDomainsRenamer("eth_phy_tx")(WaitTimer(more_ack_time  * eth_phy_tx_clk_freq))
 
         # Checker.
         # --------
-        checker_max   = int(check_period*eth_tx_clk_freq)
+        checker_max   = int(check_period*eth_phy_tx_clk_freq)
         checker_count = Signal(max=checker_max + 1)
         checker_tick  = Signal()
         checker_error = Signal()
-        self.sync.eth_tx += [
+        self.sync.eth_phy_tx += [
             checker_tick.eq(0),
             If(checker_count == 0,
                 checker_tick.eq(1),
@@ -318,11 +321,7 @@ class PCS32(LiteXModule):
                 checker_count.eq(checker_max)
             ),
             If(checker_tick,    checker_error.eq(1)),
-            
 
-            If(rx_config_reg_abi.o,
-                seen_abi.eq(1),
-            ),
             If(rx_config_reg_ack.o,
                 seen_ack.eq(1),
             ),
@@ -351,7 +350,7 @@ class PCS32(LiteXModule):
 
         # FSM.
         # ----
-        self.fsm = fsm = ClockDomainsRenamer("eth_tx")(FSM())
+        self.fsm = fsm = ClockDomainsRenamer("eth_phy_tx")(FSM())
         self.fsm_state = Signal(3)
         # AN_ENABLE.
         fsm.act("AUTONEG-BREAKLINK",
@@ -370,7 +369,7 @@ class PCS32(LiteXModule):
             self.fsm_state.eq(2),
             self.tx.config_valid.eq(1),
             self.align.eq(1),
-            If(seen_abi, #rx_config_reg_abi.o, # Got matching abi reg
+            If(rx_config_reg_abi.o, # Got matching abi reg
                 NextState("AUTONEG-SEND-MORE-ABI"),
             ),
             If(rx_is_idle.o,
@@ -387,6 +386,7 @@ class PCS32(LiteXModule):
             more_ack_timer.wait.eq(1),
             If(more_ack_timer.done,
                 NextValue(autoneg_ack, 1),
+                more_ack_timer.wait.eq(0), # reset the counter before next step
                 NextState("AUTONEG-WAIT-ACK")
             ),
             If(checker_error,
@@ -400,6 +400,12 @@ class PCS32(LiteXModule):
             self.tx.config_valid.eq(1),
             If(seen_ack, #rx_config_reg_ack.o,
                 NextState("AUTONEG-SEND-MORE-ACK")
+            ),
+            more_ack_timer.wait.eq(1), # timeout
+            If(more_ack_timer.done,
+                NextValue(autoneg_ack, 0), # go back to send more conf without ack
+                more_ack_timer.wait.eq(0), # reset the counter before next step
+                NextState("AUTONEG-WAIT-ABI")
             ),
             If(checker_error,
                 NextValue(self.restart, 1),
@@ -442,7 +448,7 @@ class PCS32(LiteXModule):
         # ----------------------------------
         self.rxrc = rx_config_reg_count  = Signal(4, reset=15)
         rx_config_reg_last   = Signal(16)
-        self.sync.eth_rx += [
+        self.sync.eth_phy_rx += [
             rx_config_reg_abi.i.eq(0),
             rx_config_reg_ack.i.eq(0),
             If(self.rx.seen_config_reg,
@@ -488,7 +494,7 @@ class PCS32(LiteXModule):
             CSRField("rx_err_data", size=32, offset=64),
         ])
 
-        self.lp_abi_csr = BusSynchronizer(16, "eth_rx", "sys")
+        self.lp_abi_csr = BusSynchronizer(16, "eth_phy_rx", "sys")
 
         self.comb += [
             self.lp_abi_csr.i.eq(self.lp_abi.i),
