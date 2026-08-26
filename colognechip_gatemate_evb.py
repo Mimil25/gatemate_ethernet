@@ -11,7 +11,6 @@ from migen import *
 from litex.gen import *
 
 from litex_boards.platforms import colognechip_gatemate_evb
-from litex.build.generic_platform import * 
 
 
 from litex.soc.cores.clock.colognechip import GateMatePLL
@@ -23,12 +22,10 @@ from litex.soc.integration.soc import *
 from litex.soc.integration.builder import *
 from litex.soc.integration.soc import SoCRegion
 
-#from liteeth.phy.gatemate_1000basex import GateMate_1000BASEX
-from gateware.gatemate_1000basex import GateMate_1000BASEX
 
 from litex.soc.cores.led import LedChaser
 
-from litescope import LiteScopeAnalyzer
+from gateware.gatemate_1000basex import GateMate_1000BASEX
 
 # CRG ----------------------------------------------------------------------------------------------
 
@@ -37,35 +34,31 @@ class _CRG(LiteXModule):
         self.rst    = Signal()
         rst_n       = Signal()
         self.cd_sys = ClockDomain()
-        #self.cd_sys_unbuf = ClockDomain()
 
         # # #
 
         # Clk / Rst
         clk10 = platform.request("clk10")
-
         self.rst = ~platform.request("user_btn_n", 0)
 
         self.specials += Instance("CC_USR_RSTN", o_USR_RSTN = rst_n)
 
         # PLL
-        self.pll = pll = GateMatePLL(perf_mode="speed")
+        self.pll = pll = GateMatePLL(perf_mode="economy")
         self.comb += pll.reset.eq(~rst_n | self.rst)
         pll.register_clkin(clk10, 10e6)
         pll.create_clkout(self.cd_sys, sys_clk_freq)
-        #pll.create_clkout(self.cd_sys_unbuf, sys_clk_freq)
-        #self.bufg = Instance('CC_BUFG', i_I=self.cd_sys_unbuf.clk, o_O=self.cd_sys.clk)
         platform.add_period_constraint(self.cd_sys.clk, 1e9/sys_clk_freq)
 
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCCore):
-    def __init__(self, sys_clk_freq=48e6, toolchain="colognechip",
+    def __init__(self, device="A1", sys_clk_freq=48e6, toolchain="peppercorn",
         with_l2_cache   = False,
         with_led_chaser = True,
         with_spi_flash  = True,
         **kwargs):
-        platform = colognechip_gatemate_evb.Platform(toolchain)
+        platform = colognechip_gatemate_evb.Platform(toolchain, device)
 
         # USBUART PMOD as Serial--------------------------------------------------------------------
         platform.add_extension(colognechip_gatemate_evb.usb_pmod_io("PMODB"))
@@ -79,7 +72,6 @@ class BaseSoC(SoCCore):
         SoCCore.__init__(self, platform, sys_clk_freq, ident="LiteX SoC on GateMate EVB", **kwargs)
 
         # HyperRAM ---------------------------------------------------------------------------------
-        self.integrated_main_ram_size = 128 * KILOBYTE
         if not self.integrated_main_ram_size:
             # HyperRAM Parameters.
             hyperram_device     = "W958D6NW"
@@ -137,7 +129,7 @@ class BaseSoC(SoCCore):
         platform.add_period_constraint(self.eth_phy.txoutclk, self.eth_phy.tx_clk_freq)
         platform.add_period_constraint(self.eth_phy.rxoutclk, self.eth_phy.rx_clk_freq)
 
-        with_ethernet  = True
+        with_ethernet  = False
         with_etherbone = False
         eth_ip         = "192.168.1.151"
 
@@ -146,38 +138,12 @@ class BaseSoC(SoCCore):
         if with_ethernet:
             self.add_ethernet(phy=self.eth_phy, data_width=32, dynamic_ip=False, local_ip=eth_ip, software_debug=True, with_timing_constraints=True)
 
-        #platform.add_extension([
-        #    ('dbg', 0, Pins('io_na:0')),
-        #    ('dbg', 1, Pins('io_na:1')),
-        #    ('dbg', 2, Pins('io_na:2')),
-        #    ('dbg', 3, Pins('io_na:3')),
-        #    ])
-        #platform.add_extension([
-        #    ('dbg_in', 0, Pins('io_wc:0')),
-        #    ])
-
-        #self.comb += platform.request('dbg').eq(self.eth_phy.txoutclk)
-        #self.comb += platform.request('dbg').eq(self.eth_phy.adpll_reset)
-        #self.comb += platform.request('dbg').eq(self.eth_phy.rx_prbs_err)
-        #self.comb += platform.request('dbg').eq(ClockSignal('sys'))
-        #
-        #self.comb += self.eth_phy.rx_prbs_cnt_rst.eq(platform.request('dbg_in'))
-
-        #self.scope = LiteScopeAnalyzer(
-        #        [
-        #            self.eth_phy.pcs.tx.char_is_k,
-        #        ],
-        #        depth = 1000,
-        #        clock_domain = "eth_tx",
-        #        csr_csv = "test/analyzer.csv",
-        #        )
-        
-
 # Build --------------------------------------------------------------------------------------------
 
 def main():
     from litex.build.parser import LiteXArgumentParser
     parser = LiteXArgumentParser(platform=colognechip_gatemate_evb.Platform, description="LiteX SoC on Gatemate EVB")
+    parser.add_target_argument("--device",         default="A1",             help="FPGA device (A1, A2).")
     parser.add_target_argument("--sys-clk-freq",   default=24e6, type=float, help="System clock frequency.")
     parser.add_target_argument("--flash",          action="store_true",      help="Flash bitstream.")
     parser.add_target_argument("--with-spi-flash", action="store_true",      help="Enable memory-mapped SPI flash.")
@@ -187,14 +153,13 @@ def main():
     args = parser.parse_args()
 
     soc = BaseSoC(
+        device         = args.device,
         sys_clk_freq   = args.sys_clk_freq,
         toolchain      = args.toolchain,
         with_spi_flash = args.with_spi_flash,
         **parser.soc_argdict)
 
     soc.platform.add_extension(colognechip_gatemate_evb.pmods_sdcard_io("PMODA"))
-    if args.toolchain == "peppercorn":
-        soc.platform.toolchain._synth_opts += ""# -retime" # -luttree"# " -noclkbuf"
     if args.with_spi_sdcard:
         soc.add_spi_sdcard()
     if args.with_sdcard:

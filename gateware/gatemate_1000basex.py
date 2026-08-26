@@ -46,7 +46,8 @@ class GateMate_1000BASEX(LiteXModule):
         self.tx_buffer = ClockDomainsRenamer({
                 "write": "eth_tx", # sys clock
                 "read": "eth_phy_tx",
-            })(MacPacketSlowToFastCDC(self.dw, fifo_impl=CC_AsyncFIFOBuffered))
+            })(MacPacketSlowToFastCDC(self.dw))
+        #   })(MacPacketSlowToFastCDC(self.dw, fifo_impl=CC_AsyncFIFOBuffered))
 
         self.sink   = self.tx_buffer.sink
         self.comb  += self.pcs.sink.connect(self.tx_buffer.source)
@@ -360,14 +361,14 @@ class GateMate_1000BASEX(LiteXModule):
             i_TX_CHAR_DISPVAL_I      = 0,
             i_TX_ELEC_IDLE_I         = 0,
             i_TX_DETECT_RX_I         = 1,
-            i_TX_CLK_I               = ClockSignal("eth_phy_tx"),
+            i_TX_CLK_I               = self.txoutclk,#ClockSignal("eth_phy_tx"),
             o_TX_DETECT_RX_DONE_O    = Open(),
             o_TX_DETECT_RX_PRESENT_O = Open(),
             o_TX_BUF_ERR_O           = Open(),
             o_TX_RESET_DONE_O        = tx_reset_done,
 
             # RX
-            i_RX_CLK_I               = ClockSignal("eth_phy_rx"),
+            i_RX_CLK_I               = self.txoutclk,#ClockSignal("eth_phy_rx"),
             i_RX_RESET_I             = rx_reset,
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
