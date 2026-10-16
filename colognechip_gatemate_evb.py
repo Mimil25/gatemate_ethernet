@@ -21,11 +21,11 @@ from litex.soc.interconnect import wishbone
 from litex.soc.integration.soc import *
 from litex.soc.integration.builder import *
 from litex.soc.integration.soc import SoCRegion
-
+from litescope import LiteScopeAnalyzer
 
 from litex.soc.cores.led import LedChaser
 
-from gateware.gatemate_1000basex import GateMate_1000BASEX
+from gateware.wrapper_serdes_gatemate import GateMate_1000BASEX
 
 # CRG ----------------------------------------------------------------------------------------------
 
@@ -60,10 +60,10 @@ class BaseSoC(SoCCore):
         **kwargs):
         platform = colognechip_gatemate_evb.Platform(toolchain, device)
 
-        # USBUART PMOD as Serial--------------------------------------------------------------------
+        # USBUART PMOD as Crossover--------------------------------------------------------------------
         platform.add_extension(colognechip_gatemate_evb.usb_pmod_io("PMODB"))
-        if kwargs.get("uart_name", "serial") == "serial":
-            if kwargs.get("uart_name", "serial") == "serial": kwargs["uart_name"] = "usb_uart"
+        #kwargs["uart_name"] = "crossover"
+        if kwargs.get("uart_name", "serial") == "serial": kwargs["uart_name"] = "usb_uart"
 
         # CRG --------------------------------------------------------------------------------------
         self.crg = _CRG(platform, sys_clk_freq)
@@ -119,7 +119,7 @@ class BaseSoC(SoCCore):
         
         # Ethernet ---------------------------------------------------------------------------------
         
-        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, refclk_freq=100e6)
+        self.eth_phy = GateMate_1000BASEX(sys_clk_freq, ref_clk_freq=100e6)
         
         #platform.add_source('gateware/serdes_lb.v')
         #self.serdes = Instance('serdes_lb',
@@ -129,14 +129,14 @@ class BaseSoC(SoCCore):
         platform.add_period_constraint(self.eth_phy.txoutclk, self.eth_phy.tx_clk_freq)
         platform.add_period_constraint(self.eth_phy.rxoutclk, self.eth_phy.rx_clk_freq)
 
-        with_ethernet  = False
+        with_ethernet  = True
         with_etherbone = False
         eth_ip         = "192.168.1.151"
 
         if with_etherbone:
             self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
         if with_ethernet:
-            self.add_ethernet(phy=self.eth_phy, data_width=32, dynamic_ip=False, local_ip=eth_ip, software_debug=True, with_timing_constraints=True)
+            self.add_ethernet(phy=self.eth_phy, data_width=32, dynamic_ip=True, software_debug=True, with_timing_constraints=True)
 
 # Build --------------------------------------------------------------------------------------------
 

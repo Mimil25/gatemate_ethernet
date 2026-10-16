@@ -18,55 +18,40 @@ from litex.soc.cores.clock.colognechip import GateMatePLL
 
 from liteeth.common import *
 
-from .pcs32_1000basex import *
-from .mac_cdc import MacPacketSlowToFastCDC
-from .cc_fifo import CC_AsyncFIFO, CC_AsyncFIFOBuffered
-
-# GateMate_1000BASEX PHY ---------------------------------------------------------------------------------
-
-class GateMate_1000BASEX(LiteXModule):
+class PMA_SERDES_GateMate(LiteXModule):
     linerate    = 1.25e9
     def __init__(self, sys_clk_freq, refclk_freq=100e6, with_csr=True,
         tx_polarity     = 0,
         rx_polarity     = 0,
     ):
         assert refclk_freq in [100e6, 125e6]
-        self.dw = 32 # assert dw in [16, 32, 64]
-
-        self.rx_clk_freq = self.linerate / (self.dw *1.25)
-        self.tx_clk_freq = self.linerate / (self.dw *1.25)
-
-        self.cd_eth_phy_tx = ClockDomain()
-        self.cd_eth_phy_rx = ClockDomain()
-        
-        self.cd_eth_tx = ClockDomain()
-        self.cd_eth_rx = ClockDomain()
-
-        self.pcs = PCS32(eth_phy_tx_clk_freq=self.tx_clk_freq)
-        self.tx_buffer = ClockDomainsRenamer({
-                "write": "eth_tx", # sys clock
-                "read": "eth_phy_tx",
-            })(MacPacketSlowToFastCDC(self.dw))
-        #   })(MacPacketSlowToFastCDC(self.dw, fifo_impl=CC_AsyncFIFOBuffered))
-
-        self.sink   = self.tx_buffer.sink
-        self.comb  += self.pcs.sink.connect(self.tx_buffer.source)
-        self.source = self.pcs.source
-        self.link_up = self.pcs.link_up
-
-        self.comb += [
-            self.cd_eth_rx.clk.eq(self.cd_eth_phy_rx.clk),
-            self.cd_eth_rx.rst.eq(self.cd_eth_phy_rx.rst),
-            self.cd_eth_tx.clk.eq(ClockDomain('sys').clk),
-            self.cd_eth_tx.rst.eq(ClockDomain('sys').rst),
-        ]
-
-        # for specifying clock constraints.
-        self.txoutclk = Signal()
-        self.rxoutclk = Signal()
+        self.dw = dw = 32 # assert dw in [16, 32, 64]
 
         self.reset = Signal() # sync reset
 
+        self.tx_clk_freq = self.linerate / dw
+        self.rx_clk_freq = self.linerate / dw
+
+        self.reset    = Signal()
+        self.align    = Signal()
+        self.restart  = Signal()
+        self.rx_valid = Signal(reset=1)
+        self.comb += self.rx_valid.eq(1)
+
+        self.cd_eth_tx      = ClockDomain()
+        self.cd_eth_rx      = ClockDomain()
+
+        # for specifying clock constraints. 125MHz clocks.
+        self.txoutclk = Signal()
+        self.rxoutclk = Signal()
+
+
+        self.tx_data = Signal(dw)
+        self.tx_char_is_k = Signal(int(dw/8))
+        self.rx_data = Signal(dw)
+        self.rx_char_is_k = Signal(int(dw/8))
+        self.rx_table_err = Signal(int(dw/8))
+        self.rx_disparity_err = Signal(int(dw/8))
 
         # # #
 
@@ -74,7 +59,6 @@ class GateMate_1000BASEX(LiteXModule):
         adpll_reset   = Signal(reset=1)
 
         tx_reset      = Signal()
-
         tx_reset_done = Signal()
 
         rx_reset      = Signal()
@@ -124,14 +108,14 @@ class GateMate_1000BASEX(LiteXModule):
             p_RX_AFE_PEAK = 15,
             p_RX_AFE_GAIN = 8,
             p_RX_AFE_VCMSEL = 4,
-            p_RX_CALIB_EN = 1,
+            p_RX_CALIB_EN = 0,
             p_RX_CALIB_OVR = 0,
             p_RX_CALIB_VAL = 0,
             p_RX_RTERM_VCMSEL = 4,
             p_RX_RTERM_PD = 0,
 
             # RX CDR
-            p_RX_WAIT_CDR_LOCK = 0, # CHECK
+            p_RX_WAIT_CDR_LOCK = 0, # TODO CHECK
             p_RX_CDR_CKP = 0xF8,
             p_RX_CDR_CKI = 0,
             p_RX_CDR_TRANS_TH = 8,
@@ -183,7 +167,7 @@ class GateMate_1000BASEX(LiteXModule):
             p_RX_BUF_RESET_TIME = 3,
             p_RX_BUF_RESET_OVR = 0,
             p_RX_BUF_RESET = 0,
-            p_RX_BUF_BYPASS = 0,
+            p_RX_BUF_BYPASS = 1,
             p_RX_CLKCOR_USE = 0,
             p_RX_CLKCOR_MIN_LAT = 32,
             p_RX_CLKCOR_MAX_LAT = 39,
@@ -218,9 +202,9 @@ class GateMate_1000BASEX(LiteXModule):
 
             # TX+RX 8B10B
             p_TX_8B10B_EN_OVR = 0,
-            p_TX_8B10B_EN = 0,
+            p_TX_8B10B_EN = 1,
             p_RX_8B10B_EN_OVR = 0,
-            p_RX_8B10B_EN = 0,
+            p_RX_8B10B_EN = 1,
             p_RX_8B10B_BYPASS = 0,
 
             # TX+RX Datapath
@@ -337,7 +321,7 @@ class GateMate_1000BASEX(LiteXModule):
             # Misc.q
             p_SERDES_ENABLE = 1,
             p_SERDES_AUTO_INIT = 0,
-            p_SERDES_TESTMODE = 1,
+            p_SERDES_TESTMODE = 0,
         )
         serdes_params.update(
             # PLL and Misc. Ports
@@ -346,7 +330,7 @@ class GateMate_1000BASEX(LiteXModule):
             i_LOOPBACK_I             = 0b00,
 
             # TX
-            i_TX_DATA_I              = self.pcs.tx.data,
+            i_TX_DATA_I              = Cat(self.tx_data, self.tx_data),
             i_TX_RESET_I             = tx_reset,
             i_TX_PCS_RESET_I         = 0,
             i_TX_PMA_RESET_I         = 0,
@@ -356,19 +340,19 @@ class GateMate_1000BASEX(LiteXModule):
             i_TX_PRBS_FORCE_ERR_I    = 0,
             i_TX_8B10B_EN_I          = 1,
             i_TX_8B10B_BYPASS_I      = 0x00,
-            i_TX_CHAR_IS_K_I         = self.pcs.tx.char_is_k,
+            i_TX_CHAR_IS_K_I         = self.tx_char_is_k,
             i_TX_CHAR_DISPMODE_I     = 0,
             i_TX_CHAR_DISPVAL_I      = 0,
             i_TX_ELEC_IDLE_I         = 0,
             i_TX_DETECT_RX_I         = 1,
-            i_TX_CLK_I               = self.txoutclk,#ClockSignal("eth_phy_tx"),
+            i_TX_CLK_I               = self.txoutclk,
             o_TX_DETECT_RX_DONE_O    = Open(),
             o_TX_DETECT_RX_PRESENT_O = Open(),
             o_TX_BUF_ERR_O           = Open(),
             o_TX_RESET_DONE_O        = tx_reset_done,
 
             # RX
-            i_RX_CLK_I               = self.txoutclk,#ClockSignal("eth_phy_rx"),
+            i_RX_CLK_I               = self.rxoutclk,
             i_RX_RESET_I             = rx_reset,
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
@@ -382,15 +366,15 @@ class GateMate_1000BASEX(LiteXModule):
             i_RX_8B10B_EN_I          = 1,
             i_RX_8B10B_BYPASS_I      = 0x00,
             i_RX_EN_EI_DETECTOR_I    = 0,
-            i_RX_COMMA_DETECT_EN_I   = self.pcs.align,
+            i_RX_COMMA_DETECT_EN_I   = self.align,
             i_RX_SLIDE_I             = 0,
-            i_RX_MCOMMA_ALIGN_I      = self.pcs.align,
-            i_RX_PCOMMA_ALIGN_I      = self.pcs.align,
-            o_RX_DATA_O              = self.pcs.rx.data,
-            o_RX_NOT_IN_TABLE_O      = self.pcs.rx.table_err,
+            i_RX_MCOMMA_ALIGN_I      = self.align,
+            i_RX_PCOMMA_ALIGN_I      = self.align,
+            o_RX_DATA_O              = self.rx_data,
+            o_RX_NOT_IN_TABLE_O      = self.rx_table_err,
             o_RX_CHAR_IS_COMMA_O     = Open(),
-            o_RX_CHAR_IS_K_O         = self.pcs.rx.char_is_k,
-            o_RX_DISP_ERR_O          = self.pcs.rx.disparity_err,
+            o_RX_CHAR_IS_K_O         = self.rx_char_is_k,
+            o_RX_DISP_ERR_O          = self.rx_disparity_err,
             o_RX_PRBS_ERR_O          = Open(),
             o_RX_BUF_ERR_O           = Open(),
             o_RX_BYTE_IS_ALIGNED_O   = Open(),
@@ -414,24 +398,24 @@ class GateMate_1000BASEX(LiteXModule):
                 Instance(
                     'CC_BUFG',
                     i_I = self.txoutclk,
-                    o_O = self.cd_eth_phy_tx.clk,
+                    o_O = self.cd_eth_tx.clk,
                     ),
                 Instance(
                     'CC_BUFG',
                     i_I = self.rxoutclk,
-                    o_O = self.cd_eth_phy_rx.clk,
+                    o_O = self.cd_eth_rx.clk,
                     ),
                 ]
 
         rx_cd_reset = Signal(reset=1)
         tx_cd_reset = Signal(reset=1)
-        self.specials += AsyncResetSynchronizer(self.cd_eth_phy_rx, rx_cd_reset)
-        self.specials += AsyncResetSynchronizer(self.cd_eth_phy_tx, tx_cd_reset)
+        self.specials += AsyncResetSynchronizer(self.cd_eth_rx, rx_cd_reset)
+        self.specials += AsyncResetSynchronizer(self.cd_eth_tx, tx_cd_reset)
         
-        pcs_restart = PulseSynchronizer("eth_phy_tx", "sys")
+        pcs_restart = PulseSynchronizer("eth_tx", "sys")
         self.submodules += pcs_restart
         self.comb += [
-            pcs_restart.i.eq(self.pcs.restart),
+            pcs_restart.i.eq(self.restart),
         ]
         
         pll_reset_cycles = round(50e-3*sys_clk_freq)
@@ -517,10 +501,3 @@ class GateMate_1000BASEX(LiteXModule):
 
     def do_finalize(self):
         self.specials += Instance("CC_SERDES", **self.serdes_params)
-
-# GateMate_2500BASEX PHY ---------------------------------------------------------------------------------
-
-class GateMate_2500BASEX(GateMate_1000BASEX):
-    linerate    = 3.125e9
-    rx_clk_freq = 312.5e6
-    tx_clk_freq = 312.5e6
