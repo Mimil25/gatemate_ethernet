@@ -59,42 +59,66 @@ class PCSTX32(LiteXModule):
         self.config_reg   = Signal(16)                             # Config register (16-bit).
         self.sink         = sink = stream.Endpoint(eth_phy_description(32))  # Data input.
 
+
+        self.be_trace = Signal(16)
+        #self.sync += self.be_trace.eq(self.be_trace | (1 << sink.be))
+
         # PHY ports output
         self.char_is_k = Signal(4) # is K output
         self.data = Signal(32) # Data output
-        
-        self.data.attr.add('keep')
-        self.char_is_k.attr.add('keep')
 
         # Signals.
         # --------
         ctype  = Signal() # Toggles config type.
+        
+        char_is_k = Signal(4)
+        data = Signal(32)
+        data.attr.add('keep')
+        char_is_k.attr.add('keep')
+        self.sync += [
+                self.data.eq(data),
+                self.char_is_k.eq(char_is_k),
+                ]
+
+        self.fsm_timing_issue = Signal()
+        self.fsm_timing_good = Signal()
+        self.sync += [
+                If((self.char_is_k == 0b0000) & (self.data == 0xc5c5c5bc),
+                    self.fsm_timing_issue.eq(1),
+                ),
+                If((self.char_is_k == 0b0001) & (self.data == 0xc5c5c5bc),
+                    self.fsm_timing_good.eq(1),
+                ),
+                If(self.config_valid,
+                    self.fsm_timing_issue.eq(0),
+                ),
+        ]
 
         # FSM.
         # ----
         self.fsm = fsm = FSM()
         fsm.act("START",
             sink.ready.eq(1),
-            NextValue(self.char_is_k, 0b0001),
-            NextValue(self.data[0:8], K(28, 5)),
+            NextValue(char_is_k, 0b0001),
+            NextValue(data[0:8], K(28, 5)),
             # Wait for valid Config.
             If(self.config_valid,
                 NextValue(ctype, ~ctype),
-                NextValue(self.data[8:16], Mux(ctype,
+                NextValue(data[8:16], Mux(ctype,
                     D(21, 5), # /C1/.
                     D( 2, 2), # /C2/.
                 )),
-                NextValue(self.data[16:32], self.config_reg),
+                NextValue(data[16:32], self.config_reg),
             # Wait for valid Data.
             ).Else(
                 If(sink.valid,
-                    NextValue(self.data, Cat(
+                    NextValue(data, Cat(
                         K(27, 7), # Start-of-packet /S/.
                         sink.data[8:32]
                     )),
                     NextState("DATA")
                 ).Else(
-                    NextValue(self.data, Cat( # IDLE, disparity handeled by CC_SERDES
+                    NextValue(data, Cat( # IDLE, disparity handeled by CC_SERDES
                         K(28, 5), # D(5, 6), 
                         D(5, 6), 
                         D(5, 6), 
@@ -109,20 +133,20 @@ class PCSTX32(LiteXModule):
             If(sink.valid,
                 If(sink.last,
                     If(sink.be == 0b1111,
-                        NextValue(self.char_is_k, 0b0000),
-                        NextValue(self.data, sink.data),
+                        NextValue(char_is_k, 0b0000),
+                        NextValue(data, sink.data),
                     ),
                     If(sink.be == 0b0111,
-                        NextValue(self.char_is_k, 0b1000),
-                        NextValue(self.data, Cat(
+                        NextValue(char_is_k, 0b1000),
+                        NextValue(data, Cat(
                             sink.data[0:24],
                             K(29, 7), # End-of-frame /T/.
                             )),
                         NextState("START")
                     ),
                     If(sink.be == 0b0011,
-                        NextValue(self.char_is_k, 0b1100),
-                        NextValue(self.data, Cat(
+                        NextValue(char_is_k, 0b1100),
+                        NextValue(data, Cat(
                             sink.data[0:16],
                             K(29, 7), # End-of-frame /T/.
                             K(23, 7), # Carrier Extend /R/.
@@ -130,8 +154,8 @@ class PCSTX32(LiteXModule):
                         NextState("START")
                     ),
                     If(sink.be == 0b0001,
-                        NextValue(self.char_is_k, 0b1110),
-                        NextValue(self.data, Cat(
+                        NextValue(char_is_k, 0b1110),
+                        NextValue(data, Cat(
                             sink.data[0:8],
                             K(29, 7), # End-of-frame /T/.
                             K(23, 7), # Carrier Extend /R/.
@@ -140,12 +164,12 @@ class PCSTX32(LiteXModule):
                         NextState("START")
                     ),
                 ).Else(
-                    NextValue(self.char_is_k, 0b0000),
-                    NextValue(self.data, sink.data),
+                    NextValue(char_is_k, 0b0000),
+                    NextValue(data, sink.data),
                 ),
             ).Else(
-                NextValue(self.char_is_k, 0b1111),
-                NextValue(self.data, Cat(
+                NextValue(char_is_k, 0b1111),
+                NextValue(data, Cat(
                     K(29, 7), # End-of-frame /T/.
                     K(23, 7), # Carrier Extend /R/.
                     K(23, 7), 
@@ -164,6 +188,7 @@ class PCSRX32(LiteXModule):
         self.seen_config_reg = Signal()   # Config seen.
         self.config_reg      = Signal(16) # Config register (16-bit).
         self.error_count     = Signal(8, reset=0xff)
+        self.error_count_rst = Signal()
         self.error_data      = Signal(32) # data capture in last unexpected state
         self.error_char_is_k = Signal(4)  # char_is_k capture in last unexpected state
         self.source          = source = stream.Endpoint(eth_phy_description(32)) # Data output.
@@ -173,6 +198,7 @@ class PCSRX32(LiteXModule):
         self.char_is_k = Signal(4)
         self.disparity_err = Signal(4)
         self.table_err = Signal(4)
+        
 
         # # #
 
@@ -200,17 +226,23 @@ class PCSRX32(LiteXModule):
             disparity_err.eq(self.disparity_err),
             table_err.eq(self.table_err),
         ]
+
+        error = Signal(4)
+        self.comb += error.eq(table_err)# | disparity_err)
+        
+        self.k_trace = Signal(16)
+        #self.sync += self.k_trace.eq(Mux(self.error_count == 0xff,0, self.k_trace | (1 << char_is_k)))
         
         # Invalid char counter.
         # ---------------------
-        self.comb += invalid.eq(table_err)# | disparity_err)
+        self.comb += invalid.eq(0) #table_err)# | disparity_err)
         self.sync += [
-            If((invalid | eth_invalid) & (self.error_count < 0xfe),
+            If((invalid | eth_invalid),# & (self.error_count < 0xff),
                 self.error_count.eq(self.error_count + 1),
                 self.error_data.eq(data),
                 self.error_char_is_k.eq(char_is_k),
             ),
-            If((self.error_count == 0xff) & self.seen_config_reg, # start error count once rx is aligned
+            If(self.error_count_rst, # start error count once rx is aligned
                 self.error_count.eq(0),
             ),
         ]
@@ -222,6 +254,9 @@ class PCSRX32(LiteXModule):
             buffer.source.connect(source),
             source.last.eq(source.valid & ~buffer.sink.valid),
         ]
+        self.sync += [
+                buffer.sink.error.eq(error)
+            ]
 
         # FSM.
         # ----
@@ -230,7 +265,7 @@ class PCSRX32(LiteXModule):
             NextValue(buffer.sink.valid, 0),
             eth_invalid.eq(1),
             # Wait for a K-character.
-            If(char_is_k[:2] == 0x0001,
+            If(char_is_k == 0x0001,
                 # K-character is Config or Idle K28.5.
                 If(data[0:8] == K(28, 5),
                     If((data[8:16] == D(21, 5)) | # /C1/.
@@ -259,27 +294,87 @@ class PCSRX32(LiteXModule):
                     NextState("DATA")
                 )
             ),
-
+            If(char_is_k[1:] == 0x001,
+               If(data[8:16] == K(28, 5),
+                    # Check for Idle Word.
+                    If((data[16:24] == D( 5, 6)) | # /I1/.
+                       (data[16:24] == D(16, 2)),  # /I2/.
+                        eth_invalid.eq(0),
+                        self.seen_valid_ci.eq(1),
+                    ),
+                ),
+                # K-character is Start-of-packet /S/.
+               If(data[8:16] == K(27, 7),
+                    eth_invalid.eq(0),
+                    NextValue(buffer.sink.valid, 1),
+                    NextValue(buffer.sink.be, 0b1110),
+                    NextValue(buffer.sink.data, Cat(
+                        C(0, 8), # First Preamble Byte.
+                        C(0x55, 8), # First Preamble Byte.
+                        data[16:32]
+                    )),
+                    NextState("DATA")
+                )
+            ),
+            If(char_is_k[2:] == 0x01,
+               If(data[16:24] == K(28, 5),
+                    # Check for Idle Word.
+                    If((data[24:] == D( 5, 6)) | # /I1/.
+                       (data[24:] == D(16, 2)),  # /I2/.
+                        eth_invalid.eq(0),
+                        self.seen_valid_ci.eq(1),
+                    ),
+                ),
+                # K-character is Start-of-packet /S/.
+               If(data[16:24] == K(27, 7),
+                    eth_invalid.eq(0),
+                    NextValue(buffer.sink.valid, 1),
+                    NextValue(buffer.sink.be, 0b1100),
+                    NextValue(buffer.sink.data, Cat(
+                        C(0, 16), # First Preamble Byte.
+                        C(0x55, 8), # First Preamble Byte.
+                        data[24:32]
+                    )),
+                    NextState("DATA")
+                )
+            ),
+            If(char_is_k[3:] == 0x1,
+               If(data[24:] == K(28, 5),
+                    # Check for Idle Word. (next cycle) maybe not usfull
+                    eth_invalid.eq(0),
+                    self.seen_valid_ci.eq(1),
+                ),
+                # K-character is Start-of-packet /S/.
+               If(data[24:] == K(27, 7),
+                    eth_invalid.eq(0),
+                    NextValue(buffer.sink.valid, 1),
+                    NextValue(buffer.sink.be, 0b1000),
+                    NextValue(buffer.sink.data, Cat(
+                        C(0, 24), # First Preamble Byte.
+                        C(0x55, 8), # First Preamble Byte.
+                    )),
+                    NextState("DATA")
+                )
+            ),
         )
         fsm.act("DATA",
             eth_invalid.eq(1),
             self.seen_valid_ci.eq(1),
-            If((char_is_k == 0) & ~invalid,
+            If((char_is_k == 0),
                 # Receive Data.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
                 NextValue(buffer.sink.be, 0b1111),
                 NextValue(buffer.sink.data, data),
             ),
-            If((char_is_k[0] == 1) & (data[0:8] == K(29, 7)) & ~invalid,
+            If((char_is_k[0] == 1) & (data[0:8] == K(29, 7)),
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 0),
                 NextValue(buffer.sink.be, 0b0000),
                 NextState("START"),
-                eth_invalid.eq(1),
             ),
-            If((char_is_k[:2] == 0b0010) & (data[8:16] == K(29, 7)) & ~invalid,
+            If((char_is_k[:2] == 0b0010) & (data[8:16] == K(29, 7)),
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
@@ -287,7 +382,7 @@ class PCSRX32(LiteXModule):
                 NextValue(buffer.sink.data, data),
                 NextState("START"),
             ),
-            If((char_is_k[:3] == 0b0100) & (data[16:24] == K(29, 7)) & ~invalid,
+            If((char_is_k[:3] == 0b0100) & (data[16:24] == K(29, 7)),
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
@@ -295,7 +390,7 @@ class PCSRX32(LiteXModule):
                 NextValue(buffer.sink.data, data),
                 NextState("START"),
             ),
-            If((char_is_k == 0b1000) & (data[24:32] == K(29, 7)) & ~invalid,
+            If((char_is_k == 0b1000) & (data[24:32] == K(29, 7)),
                 # K-character is End-of-packet /S/.
                 eth_invalid.eq(0),
                 NextValue(buffer.sink.valid, 1),
@@ -305,6 +400,83 @@ class PCSRX32(LiteXModule):
             ),
         )
 
+class Realiner32(LiteXModule):
+    def __init__(self,):
+        self.sink      = stream.Endpoint(eth_phy_description(32))
+        self.source    = stream.Endpoint(eth_phy_description(32))
+
+        rem = Signal(32)
+        rem_be = Signal(4)
+
+        self.comb += self.sink.ready.eq(1)
+
+        self.fsm = fsm = FSM() # TODO handle packets with length not multiple of 32 bits
+        fsm.act('IDLE',
+                NextValue(self.source.valid, 0),
+                NextValue(self.source.last, 0),
+                If(self.sink.valid,
+                   If(self.sink.be == 0b1111,
+                      NextValue(self.source.be, 0b1111),
+                      NextValue(self.source.data, self.sink.data),
+                      NextValue(self.source.valid, 1),
+                      NextState('ALIGN_0'),
+                    ),
+                   If(self.sink.be == 0b1110,
+                      NextValue(self.source.be, 0b0000),
+                      NextValue(rem, self.sink.data[8:]),
+                      NextState('ALIGN_1'),
+                    ),
+                   If(self.sink.be == 0b1100,
+                      NextValue(self.source.be, 0b0000),
+                      NextValue(rem, self.sink.data[16:]),
+                      NextState('ALIGN_2'),
+                    ),
+                   If(self.sink.be == 0b1000,
+                      NextValue(self.source.be, 0b0000),
+                      NextValue(rem, self.sink.data[24:]),
+                      NextState('ALIGN_3'),
+                    ),
+                ),
+        )
+        fsm.act('ALIGN_0',
+                If(self.sink.valid,
+                    NextValue(self.source.be, self.sink.be),
+                    NextValue(self.source.data, self.sink.data),
+                    NextValue(self.source.valid, 1),
+                    If(self.sink.last,
+                       NextValue(self.source.last, 1),
+                       NextState('IDLE'),
+                    ),
+                ),
+            )
+        for i in range(1, 4):
+            j = i * 8 # for bytes index
+            fsm.act(f'ALIGN_{i}',
+                    If(self.sink.valid,
+                        NextValue(self.source.be, Cat((1 << (4-i)) - 1, self.sink.be[:i])),
+                        NextValue(self.source.valid, 1),
+                        NextValue(self.source.data, Cat(rem[:-j], self.sink.data[:j])),
+                        NextValue(rem, self.sink.data[j:]),
+                        If(self.sink.last,
+                           If(self.sink.be[i:],
+                               NextValue(rem_be, self.sink.be[i:]),
+                               NextState(f'END_{i}'),
+                           ).Else(
+                               NextValue(self.source.last, 1),
+                               NextState('IDLE'),
+                           )
+                        ),
+                    ),
+                )
+            fsm.act(f'END_{i}',
+                    NextValue(self.source.be, rem_be),
+                    NextValue(self.source.valid, 1),
+                    NextValue(self.source.data, rem[:-j]),
+                    NextValue(self.source.last, 1),
+                    NextState('IDLE'),
+                )
+
+            
 
 # PCS ----------------------------------------------------------------------------------------------
 
@@ -316,14 +488,14 @@ class PCS32(LiteXModule):
         more_ack_time   = 10e-3,
         sgmii_ack_time  = 1.6e-3,
         eth_tx_clk_freq = 125e6,
-        with_csr        = False,
+        with_csr        = True,
         with_autoneg    = True,
         sys_clk_freq    = None,
     ):
-        sgmii           = False
         self.sys_clk_freq = sys_clk_freq
         self.tx = ClockDomainsRenamer("eth_tx")(PCSTX32())
         self.rx = ClockDomainsRenamer("eth_rx")(PCSRX32())
+        self.rx_realiner = ClockDomainsRenamer("eth_rx")(Realiner32())
 
         self.sink      = stream.Endpoint(eth_phy_description(32))
         self.source    = stream.Endpoint(eth_phy_description(32))
@@ -346,7 +518,8 @@ class PCS32(LiteXModule):
         # Sink -> TX / RX -> Source.
         self.comb += [
             self.sink.connect(self.tx.sink,     omit={"error"}),
-            self.rx.source.connect(self.source),
+            self.rx.source.connect(self.rx_realiner.sink),
+            self.rx_realiner.source.connect(self.source),
         ]
 
         # Pulse Synchronizers.
@@ -383,47 +556,13 @@ class PCS32(LiteXModule):
 
         # Linkdown/Speed Detection.
         # -------------------------
-        if sgmii is None and not with_autoneg:
-            # If autoneg FSM is disabled, but sgmii mode is not specified, start in SGMII mode.
-            sgmii = True
-        sgmii_speed_valid = Signal()
-        sgmii_tx_speed    = Signal(2)
-        sgmii_rx_speed    = Signal(2)
-        if sgmii is None:
-            self.comb += is_sgmii.eq(self.lp_abi.o[0])
-        else:
-            self.comb += is_sgmii.eq(int(sgmii))
-        # self.comb += [
-        #     # Speed 0b11 is reserved and an empty register means nothing received yet: 1000 Mbps.
-        #     sgmii_speed_valid.eq((self.lp_abi.o[10:12] != 0b11) & (self.lp_abi.o != 0)),
-        #     sgmii_tx_speed.eq(Mux(sgmii_speed_valid, self.lp_abi.o[10:12], SGMII_1000MBPS_SPEED)),
-        #     sgmii_rx_speed.eq(Mux((self.lp_abi.i[10:12] != 0b11) & (self.lp_abi.i != 0),
-        #         self.lp_abi.i[10:12], SGMII_1000MBPS_SPEED)),
-        #     # Detect that link is down:
-        #     # - 1000BASE-X : linkup can be inferred by non-empty reg.
-        #     # - SGMII      : linkup is indicated with bit 15.
-        #     If(~is_sgmii,
-        #         linkdown.eq(self.lp_abi.o == 0),
-        #         self.tx.sgmii_speed.eq(0b10),
-        #         self.rx.sgmii_speed.eq(0b10),
-        #     ).Else(
-        #         linkdown.eq(~self.lp_abi.o[15] | ~sgmii_speed_valid),
-        #         self.tx.sgmii_speed.eq(sgmii_tx_speed),
-        #         self.rx.sgmii_speed.eq(sgmii_rx_speed),
-        #     )
-        # ]
 
         # TX Config.
         # ----------
         self.comb += [
             If(~config_empty,
-                self.tx.config_reg[0].eq(is_sgmii),                     # SGMII: SGMII in-use.
-                self.tx.config_reg[5].eq(~is_sgmii),                    # 1000BASE-X: Full-duplex.
-                If(is_sgmii,
-                    self.tx.config_reg[10:12].eq(sgmii_tx_speed),       # SGMII: Speed.
-                    self.tx.config_reg[12].eq(1),                       # SGMII: Full-duplex.
-                    self.tx.config_reg[15].eq(self.link_up),            # SGMII: Link-up.
-                ),
+                self.tx.config_reg[0].eq(0),                            # No SGMII support
+                self.tx.config_reg[5].eq(1),                            # 1000BASE-X: Full-duplex.
                 self.tx.config_reg[14].eq(autoneg_ack),                 # SGMII/1000BASE-X: Acknowledge Bit.
             )
         ]
@@ -473,10 +612,8 @@ class PCS32(LiteXModule):
             fsm.act("AUTONEG-SEND-MORE-ACK",
                 self.tx.config_valid.eq(1),
                 autoneg_ack.eq(1),
-                more_ack_timer.wait.eq(~is_sgmii),
-                sgmii_ack_timer.wait.eq(is_sgmii),
-                If((is_sgmii & sgmii_ack_timer.done) |
-                    (~is_sgmii & more_ack_timer.done),
+                more_ack_timer.wait.eq(1),
+                If(more_ack_timer.done,
                     NextState("RUNNING")
                 ),
                 # Link partner restarted Auto-Negotiation: restart too.
@@ -557,6 +694,11 @@ class PCS32(LiteXModule):
             CSRField("link_up",    size=1,  offset=0,  description="Link is up."),
             CSRField("is_sgmii",   size=1,  offset=1,  description="SGMII in-use."),
             CSRField("config_reg", size=16, offset=16, description="Link partner ability register."),
+            CSRField("error_data", size=32, offset=32),
+            CSRField("error_charisk", size=4, offset=64),
+            CSRField("error_count", size=8, offset=80),
+            CSRField("timming", size=1, offset=88),
+            CSRField("timming_g", size=1, offset=89),
         ])
 
         self.lp_abi_csr = BusSynchronizer(16, "eth_rx", "sys")
@@ -564,11 +706,22 @@ class PCS32(LiteXModule):
         self.ev      = EventManager()
         self.ev.link = EventSourceProcess(edge="any")
         self.ev.finalize()
+        
+        self.storage = CSRStorage(fields=[
+            CSRField("error_count_rst",    size=1,  offset=0),
+            ])
 
         self.comb += [
             self.lp_abi_csr.i.eq(self.lp_abi.i),
-            self.status.fields.config_reg.eq(self.lp_abi_csr.o)
+            self.status.fields.config_reg.eq(self.lp_abi_csr.o),
+            self.status.fields.error_count.eq(self.rx.error_count),
+            self.status.fields.error_data.eq(self.rx.error_data),
+            self.status.fields.error_charisk.eq(self.rx.error_char_is_k),
+            self.status.fields.timming.eq(self.tx.fsm_timing_issue),
+            self.status.fields.timming_g.eq(self.tx.fsm_timing_good),
+            self.rx.error_count_rst.eq(self.storage.fields.error_count_rst),
         ]
+
 
         # The PCS status originates in eth_tx. Both software and the event FSM consume
         # synchronized system-domain copies; the link-partner word uses its bus handshake.

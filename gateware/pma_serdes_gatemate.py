@@ -32,7 +32,6 @@ class PMA_SERDES_GateMate(LiteXModule):
         self.tx_clk_freq = self.linerate / dw
         self.rx_clk_freq = self.linerate / dw
 
-        self.reset    = Signal()
         self.align    = Signal()
         self.restart  = Signal()
         self.rx_valid = Signal(reset=1)
@@ -167,7 +166,7 @@ class PMA_SERDES_GateMate(LiteXModule):
             p_RX_BUF_RESET_TIME = 3,
             p_RX_BUF_RESET_OVR = 0,
             p_RX_BUF_RESET = 0,
-            p_RX_BUF_BYPASS = 1,
+            p_RX_BUF_BYPASS = 0, # bypass buffer to use the recovered clock on RX datapath
             p_RX_CLKCOR_USE = 0,
             p_RX_CLKCOR_MIN_LAT = 32,
             p_RX_CLKCOR_MAX_LAT = 39,
@@ -340,7 +339,7 @@ class PMA_SERDES_GateMate(LiteXModule):
             i_TX_PRBS_FORCE_ERR_I    = 0,
             i_TX_8B10B_EN_I          = 1,
             i_TX_8B10B_BYPASS_I      = 0x00,
-            i_TX_CHAR_IS_K_I         = self.tx_char_is_k,
+            i_TX_CHAR_IS_K_I         = Cat(self.tx_char_is_k, self.tx_char_is_k),
             i_TX_CHAR_DISPMODE_I     = 0,
             i_TX_CHAR_DISPVAL_I      = 0,
             i_TX_ELEC_IDLE_I         = 0,
@@ -352,7 +351,7 @@ class PMA_SERDES_GateMate(LiteXModule):
             o_TX_RESET_DONE_O        = tx_reset_done,
 
             # RX
-            i_RX_CLK_I               = self.rxoutclk,
+            i_RX_CLK_I               = self.txoutclk, #self.rxoutclk,
             i_RX_RESET_I             = rx_reset,
             i_RX_PMA_RESET_I         = 0,
             i_RX_EQA_RESET_I         = 0,
@@ -474,8 +473,6 @@ class PMA_SERDES_GateMate(LiteXModule):
         )
         
         if with_csr:
-            self._reset = CSRStorage()
-            self.comb += self.reset.eq(self._reset.storage)
             self.status = CSRStatus(fields=[
                 CSRField("fsm_state", size=4,  offset=0),
                 CSRField("rf_en", size=1,  offset=4),
