@@ -25,7 +25,7 @@ from litescope import LiteScopeAnalyzer
 
 from litex.soc.cores.led import LedChaser
 
-from gateware.wrapper_serdes_gatemate import GateMate_1000BASEX
+from liteeth.phy.serial.basex.wrappers.serdes_gatemate import GateMate_1000BASEX
 
 # CRG ----------------------------------------------------------------------------------------------
 
@@ -126,15 +126,15 @@ class BaseSoC(SoCCore):
         #                       i_trx_rstn_i = ~ResetSignal(),
         #                       i_ref_clk = ClockSignal())
 
-        platform.add_period_constraint(self.eth_phy.txoutclk, self.eth_phy.tx_clk_freq)
-        platform.add_period_constraint(self.eth_phy.rxoutclk, self.eth_phy.rx_clk_freq)
+        platform.add_period_constraint(self.eth_phy.txoutclk, 1e9/self.eth_phy.tx_clk_freq)
+        platform.add_period_constraint(self.eth_phy.rxoutclk, 1e9/self.eth_phy.rx_clk_freq)
 
         with_ethernet  = True
         with_etherbone = False
         eth_ip         = "192.168.1.151"
 
         if with_etherbone:
-            self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, data_width=32, arp_entries=4, with_ethmac=with_ethernet)
+            self.add_etherbone(phy=self.eth_phy, ip_address=eth_ip, remote_address="192.168.1.50", data_width=32, arp_entries=4, with_ethmac=with_ethernet)
         if with_ethernet:
             self.add_ethernet(phy=self.eth_phy, data_width=32, dynamic_ip=True, software_debug=True, with_timing_constraints=True)
 
@@ -144,13 +144,15 @@ def main():
     from litex.build.parser import LiteXArgumentParser
     parser = LiteXArgumentParser(platform=colognechip_gatemate_evb.Platform, description="LiteX SoC on Gatemate EVB")
     parser.add_target_argument("--device",         default="A1",             help="FPGA device (A1, A2).")
-    parser.add_target_argument("--sys-clk-freq",   default=24e6, type=float, help="System clock frequency.")
+    parser.add_target_argument("--sys-clk-freq",   default=20e6, type=float, help="System clock frequency.")
     parser.add_target_argument("--flash",          action="store_true",      help="Flash bitstream.")
     parser.add_target_argument("--with-spi-flash", action="store_true",      help="Enable memory-mapped SPI flash.")
     sdopts = parser.target_group.add_mutually_exclusive_group()
     sdopts.add_argument("--with-spi-sdcard", action="store_true", help="Enable SPI-mode SDCard support.")
     sdopts.add_argument("--with-sdcard",     action="store_true", help="Enable SDCard support.")
     args = parser.parse_args()
+
+
 
     soc = BaseSoC(
         device         = args.device,
