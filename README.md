@@ -37,7 +37,35 @@ The current suspicion is that nextpnr does not correctly model the timing constr
 
 An additional, potentially independent interoperability issue was observed with the Intel 82599ES: portions of the RX datapath appeared to remain zero. The cause is still unknown; SERDES calibration and configuration are among the hypotheses.
 
-## Main investigation: nextpnr SERDES timing
+## Link-partner-dependent RX data corruption
+
+A separate issue has been observed with some link partners, notably the Intel 82599ES.
+
+In 32-bit mode, the upper 16 bits of the received datapath are zero:
+
+- **Before 8b/10b decoding:** `RX_DATA[31:16]` (the corresponding bits in the 64-bit SERDES register representation are `RX_DATA[40:20]`) are zero.
+- **After 8b/10b decoding:** `RX_DATA[31:16]` are zero.
+
+The issue is visible directly through `serdestool.py`, at the SERDES interface, before LiteEth's PCS processing. The LiteX Acorn link partner works correctly.
+
+**This is believed to be a SERDES receiver configuration or hardware issue, unrelated to nextpnr placement reliability.**
+
+Possible explanations raised during the original [LiteEth PR #292](https://github.com/enjoy-digital/liteeth/pull/292) discussion include:
+
+- Incorrect datapath width or `RX_ALIGN_COMMA_WORD` configuration.
+- RX elastic-buffer or clock-correction configuration.
+- Receiver termination calibration.
+- Analog front-end or equalizer configuration.
+
+The original implementation used `RX_CLK_I` driven by the TX PLL, with the RX elastic buffer enabled and `RX_CLKCOR_USE=0`. Switching to the recovered RX clock and setting `RX_BUF_BYPASS=1` resolved separate RX buffer errors, but did not resolve the Intel 82599ES issue.
+
+References:
+- [LiteEth PR #292](https://github.com/enjoy-digital/liteeth/pull/292)
+- [GateMate DS1001 datasheet](https://colognechip.com/docs/ds1001-gatemate1-datasheet-latest.pdf)
+
+No root cause or working fix has been established yet.
+
+## nextpnr SERDES timing
 
 [**nextpnr issue #1882**](https://github.com/YosysHQ/nextpnr/issues/1882)
 
